@@ -610,6 +610,11 @@ async fn handle_connect(
     // Extract agent token from Proxy-Authorization header.
     let agent_token = inject::extract_agent_token(&req).filter(|t| !t.is_empty());
 
+    if agent_token.is_none() && crate::policy::strict_deny() {
+        warn!(peer = %peer_addr, host = %host, "CONNECT rejected: no agent token (strict deny)");
+        return Ok(response::proxy_auth_required());
+    }
+
     // Resolve at CONNECT time for the intercept decision and agent identity.
     // DB injection/policy rules are NOT frozen here — they're re-resolved
     // per request inside the MITM tunnel from cache (see mitm.rs).
@@ -761,6 +766,11 @@ async fn handle_http_proxy(
     let hostname = strip_port(&authority).to_string();
 
     let agent_token = inject::extract_agent_token(&req).filter(|t| !t.is_empty());
+
+    if agent_token.is_none() && crate::policy::strict_deny() {
+        warn!(peer = %peer_addr, host = %authority, "HTTP proxy rejected: no agent token (strict deny)");
+        return Ok(response::proxy_auth_required());
+    }
 
     let connection_id = connect::extract_connection_id(req.headers());
 

@@ -196,6 +196,24 @@ fn is_git_push_discovery(path: &str) -> bool {
     base.ends_with("/info/refs") && query.split('&').any(|p| p == "service=git-receive-pack")
 }
 
+/// Strict deny (`GATEWAY_STRICT_DENY=true`): deny-by-default covers every
+/// request — uncredentialed ones and LLM hosts included — and requests without
+/// an agent token are refused, so only explicitly allowed traffic leaves.
+pub(crate) fn strict_deny() -> bool {
+    static STRICT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *STRICT.get_or_init(|| {
+        std::env::var("GATEWAY_STRICT_DENY")
+            .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+            .unwrap_or(false)
+    })
+}
+
+/// Whether deny-by-default applies to this request. Upstream behavior covers
+/// only credentialed requests to non-LLM hosts; strict deny covers all.
+pub(crate) fn should_enforce_deny(has_injections: bool, host: &str) -> bool {
+    strict_deny() || (has_injections && !is_llm_host(host))
+}
+
 /// Returns true if the host belongs to a known LLM provider.
 /// LLM traffic bypasses deny-by-default policy and is always logged.
 pub(crate) fn is_llm_host(host: &str) -> bool {

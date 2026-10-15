@@ -102,7 +102,7 @@ pub(super) async fn handle_websocket(
 
     let agent_token = proxy_ctx.agent_token.as_deref().unwrap_or("");
     let has_injections = !rules.injection_rules.is_empty();
-    let enforce_deny = has_injections && !policy::is_llm_host(host);
+    let enforce_deny = policy::should_enforce_deny(has_injections, host);
 
     let org_id = proxy_ctx.organization_id.as_deref().unwrap_or("");
     let pid = proxy_ctx.project_id.as_deref().unwrap_or("");
