@@ -221,7 +221,7 @@ async fn main() -> Result<()> {
     // Local addition: Cedar mode loads policy documents with the same pool.
     policy_engine::cedar::init(pool.clone());
     if policy_engine::cedar::enabled() {
-        info!("policy engine: Cedar (GATEWAY_POLICY_ENGINE=cedar)");
+        info!("policy engine: Cedar (credential grants from policy_rules_v2)");
     }
     let telemetry_pool = pool.clone();
     // The pool itself moves into the PolicyEngine below, and that moves into

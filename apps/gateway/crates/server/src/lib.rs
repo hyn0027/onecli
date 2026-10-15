@@ -498,12 +498,7 @@ async fn invalidate_cache(
     .await
 }
 
-#[derive(serde::Deserialize)]
-struct CedarValidateRequest {
-    policy_text: String,
-}
-
-/// How this gateway decides requests: the engine (Cedar or the rule engine)
+/// How this gateway decides requests: the engine (always Cedar in this build)
 /// and whether deny-by-default is strict. Read by the dashboard's Policy page.
 async fn cedar_status(_auth: AuthUser) -> impl axum::response::IntoResponse {
     axum::Json(serde_json::json!({
@@ -512,16 +507,25 @@ async fn cedar_status(_auth: AuthUser) -> impl axum::response::IntoResponse {
     }))
 }
 
-/// Parse a Cedar policy document and list its policies. Authenticated like the
+#[derive(serde::Deserialize)]
+struct CedarValidateRequest {
+    /// The policy's name (its Cedar id); defaults to "policy".
+    #[serde(default)]
+    name: Option<String>,
+    policy_text: String,
+}
+
+/// Validate one Cedar policy statement and describe it. Authenticated like the
 /// other dashboard-facing routes; reads no data.
 async fn validate_cedar(
     _auth: AuthUser,
     axum::Json(body): axum::Json<CedarValidateRequest>,
 ) -> impl axum::response::IntoResponse {
-    match policy_engine::cedar::summarize(&body.policy_text) {
-        Ok(policies) => (
+    let name = body.name.as_deref().unwrap_or("policy");
+    match policy_engine::cedar::summarize(name, &body.policy_text) {
+        Ok(policy) => (
             StatusCode::OK,
-            axum::Json(serde_json::json!({ "valid": true, "policies": policies })),
+            axum::Json(serde_json::json!({ "valid": true, "policy": policy })),
         ),
         Err(error) => (
             StatusCode::OK,

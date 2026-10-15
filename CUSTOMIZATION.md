@@ -34,28 +34,33 @@ every request.
 Requests without an agent token are already refused at CONNECT in 2.14 (the
 1.41 port of this patch had to add that too).
 
-### 2. Cedar policy engine (`GATEWAY_POLICY_ENGINE=cedar`)
+Now that Cedar decides every request (below), this only matters for the rule
+engine, which no longer decides anything; it is kept as a fallback posture.
 
-With the variable set, each proxied request is decided by the workspace's
-Cedar policy document instead of the `policy_rules_v2` first-match engine.
-Credential injection still follows the published grants. Full reference:
+### 2. Cedar policy engine (always on)
+
+Every proxied request is decided by the workspace's enabled Cedar policies;
+the `policy_rules_v2` first-match engine no longer allows or blocks anything.
+OneCLI's rules are used only for credential injection: published grants decide
+which secrets and app connections are injected for which agents. Full reference:
 [`docs/cedar-policies.md`](docs/cedar-policies.md).
 
 - `apps/gateway/Cargo.toml`: `cedar-policy = "=4.13.0"` (released 2026-09-15), pinned exactly; `Cargo.lock` updated.
-- `apps/gateway/crates/policy-engine/src/cedar.rs` (new): request model (principal `OneCLI::Agent`, action per HTTP method with `read`/`write` groups, resource `OneCLI::Host`, context with path, query, headers, body, and JSON body), policy loading with a 5 s cache, decision mapping (`@approval`, `@rate_limit`, `@id`), fail-closed handling (no document, unparsable document, erroring `forbid`), and unit tests.
+- `apps/gateway/crates/policy-engine/src/cedar.rs` (new): request model (principal `OneCLI::Agent`, action = the plain HTTP method, resource `OneCLI::Host`, context with path, query, headers, body, and JSON body), loading of a workspace's enabled policies (one statement each, named by their row) with a 5 s cache, decision mapping (`@approval`, `@rate_limit`), fail-closed handling (no enabled policy, unparsable policy, erroring `forbid`), and unit tests.
 - `apps/gateway/crates/policy-engine/src/enforce.rs`: `evaluate()` takes the request headers and hands off to Cedar when enabled; `would_allow()` does the same from cached policies.
 - `apps/gateway/crates/policy-engine/src/lib.rs`, `Cargo.toml`: module and dependencies.
-- `apps/gateway/crates/proxy/src/{forward,websocket,tunnel}.rs`: pass headers to `evaluate()`; `forward.rs` buffers bodies when a Cedar document reads them.
+- `apps/gateway/crates/proxy/src/{forward,websocket,tunnel}.rs`: pass headers to `evaluate()`; `forward.rs` buffers bodies when an enabled Cedar policy reads them.
 - `apps/gateway/crates/server/src/lib.rs`: `POST /v1/cedar/validate` (parse with the gateway's parser) and `GET /v1/cedar/status` (engine and strict-deny state), both user-authenticated; cache invalidation also drops cached Cedar policies.
 - `apps/gateway/crates/onecli-gateway/src/main.rs`: gives the Cedar loader the database pool and logs the engine.
 - `apps/gateway/crates/{server,onecli-gateway}/Cargo.toml`: depend on `policy-engine`.
 
 ### 3. Policy storage, API, and dashboard page
 
-- `packages/db/prisma/schema.prisma`: model `CedarPolicy` (`cedar_policies`, one document per workspace, cascades with the workspace).
-- `packages/db/prisma/migrations/20261015200000_cedar_policies/`: creates the table.
-- `packages/api/src/routes/cedar-policy.ts` (new), mounted in `packages/api/src/app.ts` at `/v1/cedar-policy`: `GET` (document, parsed entries, gateway status, published rules), `POST /validate`, `PUT` (validates through the gateway, saves, flushes the gateway cache; workspace managers only).
-- `apps/web/src/app/(dashboard)/w/[workspaceId]/settings/policy/` (new): **Workspace Settings → Policy** page showing the default posture, the Cedar policy entries with an editor (Validate / Save), and the published rules read-only.
+- `packages/db/prisma/schema.prisma`: model `CedarPolicyRule` (`cedar_policy_rules`: one Cedar statement per row with a name unique per workspace, description, on/off flag, and position; cascades with the workspace).
+- `packages/db/prisma/migrations/20261015200000_cedar_policies/` created an earlier single-document table; `20261016000000_cedar_policy_rules/` replaces it with per-policy rows.
+- `packages/api/src/routes/cedar-policy.ts` (new), mounted in `packages/api/src/app.ts` at `/v1/cedar-policy`: `GET` (policies with their parsed effect, gateway status, credential grants and secret configuration), `POST /validate`, `POST /policies`, `PATCH /policies/:id` (edit or switch on/off), `DELETE /policies/:id`; every change is validated by the gateway and flushes its cache; changes need workspace management rights.
+- `apps/web/src/app/(dashboard)/w/[workspaceId]/settings/policy/` (new): **Workspace Settings → Policy** page showing the default posture, each Cedar policy with its code, an on/off switch, edit, delete, and an add form (`cedar-policies.tsx`), and the credential grants.
+- `.../settings/policy/_components/grant-details.tsx` (new): for each credential grant, the agents it applies to and each covered secret's configuration (type, effective host patterns, path pattern, how it is injected), mirroring the gateway's injection code; the API returns secret configuration only, never values.
 - `apps/web/src/lib/api/cedar-policy.ts` (new) and `lib/api/index.ts`: API client.
 - `apps/web/src/lib/nav-config.ts` (+ test): "Policy" in the workspace settings menu.
 
@@ -92,6 +97,11 @@ publishes keep them):
 - `Allow Anthropic API` — network target `api.anthropic.com`
 - `Allow Wikipedia` — network target `*.wikipedia.org`
 - `Default: block` — the deny-by-default rule (1.41 policy mode "deny")
+
+When Cedar became the only decision engine, the two allow rules were deleted
+(published and draft) and moved into the workspace's Cedar policies
+(`allow-anthropic-api`, `read-wikipedia`, the latter read-only). The default
+block row remains, unused.
 
 Done in the dashboard by the operator: account registration (which adopted
 the 1.41 install), and the grant "Grant: Nano · Anthropic" that gives the

@@ -28,7 +28,7 @@ mod enforce;
 mod evaluate;
 mod graphql;
 mod inject_select;
-/// Local addition: Cedar policy mode (`GATEWAY_POLICY_ENGINE=cedar`).
+/// Local addition: the Cedar policy engine (decides every request).
 pub mod cedar;
 mod loaders;
 

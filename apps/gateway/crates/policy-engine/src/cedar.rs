@@ -1,18 +1,20 @@
-//! Cedar policy mode (`GATEWAY_POLICY_ENGINE=cedar`): every proxied request is
-//! decided by the workspace's Cedar policy set instead of the `policy_rules_v2`
-//! first-match engine. Local addition on top of OneCLI 2.14.
+//! Cedar policy engine: every proxied request is decided by the workspace's
+//! Cedar policies. The `policy_rules_v2` first-match engine no longer decides
+//! anything; its rules still select which credentials are injected (grants).
+//! Local addition on top of OneCLI 2.14.
 //!
 //! Cedar is default-deny: a request passes only when a `permit` policy is
-//! satisfied and no `forbid` policy is. Policies are stored as one Cedar
-//! document per workspace in `cedar_policies` and reloaded at most every
-//! [`RELOAD_AFTER`]; a workspace with no document denies everything, and a
-//! document that fails to parse denies everything (fail closed).
+//! satisfied and no `forbid` policy is. Each policy is one row of
+//! `cedar_policy_rules` (one Cedar statement, a unique name, an on/off flag);
+//! the enabled rows of a workspace form its policy set, reloaded at most every
+//! [`RELOAD_AFTER`]. No enabled policy denies everything, and a stored policy
+//! that fails to parse denies everything (fail closed).
 //!
 //! Request model (see `docs/cedar-policies.md`):
 //! - principal `OneCLI::Agent::"<agent id>"` (attrs `id`, `identifier`, `name`),
 //!   member of `OneCLI::Workspace::"<workspace id>"`;
-//! - action `OneCLI::Action::"<METHOD>"`; GET/HEAD/OPTIONS are in
-//!   `Action::"read"`, POST/PUT/PATCH/DELETE in `Action::"write"`;
+//! - action `OneCLI::Action::"<HTTP METHOD>"` — exactly the request method
+//!   (`GET`, `POST`, ...; `CONNECT` for an undecrypted tunnel), no groups;
 //! - resource `OneCLI::Host::"<host>"` (attr `name`);
 //! - context: `method`, `host`, `port`, `path`, `query_string`, `query`
 //!   (record of parameters), `headers` (record, lower-case names), `has_body`,
@@ -21,7 +23,8 @@
 //!
 //! Annotations on `permit` policies: `@approval` holds matching requests for
 //! manual approval (a satisfied permit without it wins), `@rate_limit("N/minute")`
-//! (or hour/day) rate-limits them. `@id("name")` names a policy in logs and 403s.
+//! (or hour/day) rate-limits them. The row's name identifies the policy in logs
+//! and 403 responses.
 //!
 //! A `forbid` policy that errors while evaluating (for example it reads an
 //! attribute the request lacks, without a `has` guard) blocks the request: an
@@ -46,23 +49,16 @@ use common::util::strip_port;
 use context::ProxyContext;
 use policy::{check_rate_limit, ConditionBody, MatchedRule, PolicyDecision};
 
-const ENGINE_ENV: &str = "GATEWAY_POLICY_ENGINE";
 /// How long a loaded policy document is reused before re-reading the database.
 const RELOAD_AFTER: Duration = Duration::from_secs(5);
 /// JSON nesting kept when converting a body to a Cedar value; deeper parts become strings.
 const MAX_JSON_DEPTH: usize = 32;
 
-const READ_METHODS: [&str; 3] = ["GET", "HEAD", "OPTIONS"];
-const WRITE_METHODS: [&str; 4] = ["POST", "PUT", "PATCH", "DELETE"];
-
-/// Whether the gateway decides requests with Cedar.
+/// Whether the gateway decides requests with Cedar. Always true in this build:
+/// Cedar is the only decision engine, and the `policy_rules_v2` rules are used
+/// only for credential grants (which secrets/connections get injected).
 pub fn enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        std::env::var(ENGINE_ENV)
-            .map(|v| v.trim().eq_ignore_ascii_case("cedar"))
-            .unwrap_or(false)
-    })
+    true
 }
 
 /// Whether the gateway runs with `GATEWAY_STRICT_DENY` (re-exported for the server).
@@ -77,9 +73,9 @@ pub fn init(pool: PgPool) {
     let _ = POOL.set(pool);
 }
 
-/// One workspace's policy document as the gateway last loaded it.
+/// One workspace's enabled policies as the gateway last loaded them.
 pub struct LoadedPolicies {
-    /// The parsed set, or why the document could not be used (then every request is denied).
+    /// The policy set, or why it could not be built (then every request is denied).
     pub set: Result<PolicySet, String>,
     /// Whether any policy mentions the body, so requests must be buffered for it.
     pub inspects_body: bool,
@@ -90,51 +86,60 @@ fn cache() -> &'static DashMap<String, (Instant, Arc<LoadedPolicies>)> {
     CACHE.get_or_init(DashMap::new)
 }
 
-/// Parse a policy document and check the annotations this gateway interprets.
-pub fn parse(text: &str) -> Result<PolicySet, String> {
-    let set = PolicySet::from_str(text).map_err(|e| format!("{e:?}"))?;
-    for policy in set.policies() {
-        let name = display_name(policy);
-        if let Some(spec) = policy.annotation("rate_limit") {
-            if policy.effect() != Effect::Permit {
-                return Err(format!("{name}: @rate_limit only applies to permit policies"));
-            }
-            parse_rate_limit(spec).ok_or_else(|| {
-                format!("{name}: @rate_limit(\"{spec}\") must look like \"60/minute\" (minute, hour, or day)")
-            })?;
+/// Parse one policy statement (exactly one) under the given name and check the
+/// annotations this gateway interprets.
+pub fn parse_policy(name: &str, text: &str) -> Result<Policy, String> {
+    let set = PolicySet::from_str(text).map_err(|e| format!("{e}"))?;
+    let count = set.policies().count() + set.templates().count();
+    if count != 1 {
+        return Err(format!(
+            "each entry must contain exactly one policy statement (found {count})"
+        ));
+    }
+    if set.templates().count() > 0 {
+        return Err("policy templates (?principal / ?resource slots) are not supported".into());
+    }
+    let policy = Policy::parse(Some(PolicyId::new(name)), text).map_err(|e| format!("{e}"))?;
+    if let Some(spec) = policy.annotation("rate_limit") {
+        if policy.effect() != Effect::Permit {
+            return Err("@rate_limit only applies to permit policies".into());
         }
-        if policy.annotation("approval").is_some() && policy.effect() != Effect::Permit {
-            return Err(format!("{name}: @approval only applies to permit policies"));
-        }
+        parse_rate_limit(spec).ok_or_else(|| {
+            format!("@rate_limit(\"{spec}\") must look like \"60/minute\" (minute, hour, or day)")
+        })?;
+    }
+    if policy.annotation("approval").is_some() && policy.effect() != Effect::Permit {
+        return Err("@approval only applies to permit policies".into());
+    }
+    Ok(policy)
+}
+
+/// Build a policy set from (name, text) pairs; any unusable policy fails the set.
+pub fn build_set(policies: &[(String, String)]) -> Result<PolicySet, String> {
+    let mut set = PolicySet::new();
+    for (name, text) in policies {
+        let policy = parse_policy(name, text).map_err(|e| format!("{name}: {e}"))?;
+        set.add(policy).map_err(|e| format!("{name}: {e}"))?;
     }
     Ok(set)
 }
 
-/// One policy as the dashboard lists it.
+/// One policy as the dashboard describes it.
 #[derive(serde::Serialize)]
 pub struct PolicySummary {
-    pub id: String,
-    pub name: String,
     pub effect: &'static str,
     pub approval: bool,
     pub rate_limit: Option<String>,
 }
 
-/// Parse a document and describe each policy, or the parse error.
-pub fn summarize(text: &str) -> Result<Vec<PolicySummary>, String> {
-    let set = parse(text)?;
-    let mut out: Vec<PolicySummary> = set
-        .policies()
-        .map(|p| PolicySummary {
-            id: p.id().to_string(),
-            name: display_name(p),
-            effect: if p.effect() == Effect::Permit { "permit" } else { "forbid" },
-            approval: p.annotation("approval").is_some(),
-            rate_limit: p.annotation("rate_limit").map(str::to_string),
-        })
-        .collect();
-    out.sort_by_key(|s| s.id.trim_start_matches("policy").parse::<u64>().unwrap_or(u64::MAX));
-    Ok(out)
+/// Validate one policy statement and describe it, or return the error.
+pub fn summarize(name: &str, text: &str) -> Result<PolicySummary, String> {
+    let p = parse_policy(name, text)?;
+    Ok(PolicySummary {
+        effect: if p.effect() == Effect::Permit { "permit" } else { "forbid" },
+        approval: p.annotation("approval").is_some(),
+        rate_limit: p.annotation("rate_limit").map(str::to_string),
+    })
 }
 
 /// Forget a workspace's cached policies so the next request reloads them.
@@ -142,12 +147,12 @@ pub fn invalidate(workspace_id: &str) {
     cache().remove(workspace_id);
 }
 
-/// Whether the document can read the request body (conservative text check).
+/// Whether a policy can read the request body (conservative text check).
 fn mentions_body(text: &str) -> bool {
     text.contains("body") || text.contains("json")
 }
 
-/// The workspace's policies, reloaded from the database at most every [`RELOAD_AFTER`].
+/// The workspace's enabled policies, reloaded at most every [`RELOAD_AFTER`].
 pub async fn policies_for(workspace_id: &str) -> Arc<LoadedPolicies> {
     if let Some(entry) = cache().get(workspace_id) {
         if entry.0.elapsed() < RELOAD_AFTER {
@@ -155,10 +160,10 @@ pub async fn policies_for(workspace_id: &str) -> Arc<LoadedPolicies> {
         }
     }
     let loaded = match load(workspace_id).await {
-        Ok(text) => Arc::new(LoadedPolicies {
-            inspects_body: text.as_deref().is_some_and(mentions_body),
-            // No document: an empty set, which denies every request.
-            set: text.map_or_else(|| Ok(PolicySet::new()), |t| parse(&t)),
+        Ok(rows) => Arc::new(LoadedPolicies {
+            inspects_body: rows.iter().any(|(_, text)| mentions_body(text)),
+            // No enabled policy: an empty set, which denies every request.
+            set: build_set(&rows),
         }),
         Err(e) => {
             // Keep serving the last good policies through a transient DB error.
@@ -173,23 +178,25 @@ pub async fn policies_for(workspace_id: &str) -> Arc<LoadedPolicies> {
         }
     };
     if let Err(e) = &loaded.set {
-        warn!(workspace = workspace_id, error = %e, "cedar: policy document unusable, denying all requests");
+        warn!(workspace = workspace_id, error = %e, "cedar: policies unusable, denying all requests");
     }
     cache().insert(workspace_id.to_string(), (Instant::now(), Arc::clone(&loaded)));
     loaded
 }
 
-async fn load(workspace_id: &str) -> anyhow::Result<Option<String>> {
+/// (name, policy text) of the workspace's enabled policies.
+async fn load(workspace_id: &str) -> anyhow::Result<Vec<(String, String)>> {
     let pool = POOL
         .get()
         .ok_or_else(|| anyhow::anyhow!("cedar loader not initialised"))?;
-    let text = sqlx::query_scalar::<_, String>(
-        "SELECT policy_text FROM cedar_policies WHERE workspace_id = $1",
+    let rows = sqlx::query_as::<_, (String, String)>(
+        "SELECT name, policy_text FROM cedar_policy_rules \
+         WHERE workspace_id = $1 AND enabled ORDER BY position, created_at",
     )
     .bind(workspace_id)
-    .fetch_optional(pool)
+    .fetch_all(pool)
     .await?;
-    Ok(text)
+    Ok(rows)
 }
 
 /// Whether requests to this workspace must have their bodies buffered.
@@ -368,12 +375,9 @@ fn matched(id: &PolicyId, name: &str) -> MatchedRule {
     }
 }
 
-/// `@id("...")` when present, else Cedar's positional id (`policy0`, ...).
+/// The policy's name (its id is the row name).
 pub fn display_name(policy: &Policy) -> String {
-    policy
-        .annotation("id")
-        .map(str::to_string)
-        .unwrap_or_else(|| policy.id().to_string())
+    policy.id().to_string()
 }
 
 /// "60/minute" → (60, 60); minute, hour, or day.
@@ -410,15 +414,6 @@ fn build(
     let action = uid("OneCLI::Action", &method)?;
     let resource = uid("OneCLI::Host", &host)?;
 
-    let read = uid("OneCLI::Action", "read")?;
-    let write = uid("OneCLI::Action", "write")?;
-    let mut action_parents = HashSet::new();
-    if READ_METHODS.contains(&method.as_str()) {
-        action_parents.insert(read.clone());
-    } else if WRITE_METHODS.contains(&method.as_str()) {
-        action_parents.insert(write.clone());
-    }
-
     let string = |s: &str| RestrictedExpression::new_string(s.to_string());
     let agent_attrs: HashMap<String, RestrictedExpression> = [
         ("id".to_string(), string(agent_id)),
@@ -440,9 +435,7 @@ fn build(
             Entity::new(principal.clone(), agent_attrs, HashSet::from([workspace.clone()]))?,
             Entity::new_no_attrs(workspace, HashSet::new()),
             Entity::new(resource.clone(), host_attrs, HashSet::new())?,
-            Entity::new_no_attrs(action.clone(), action_parents),
-            Entity::new_no_attrs(read, HashSet::new()),
-            Entity::new_no_attrs(write, HashSet::new()),
+            Entity::new_no_attrs(action.clone(), HashSet::new()),
         ],
         None,
     )?;
@@ -555,8 +548,19 @@ mod tests {
         }
     }
 
-    fn eval(text: &str, method: &str, host: &str, path: &str, headers: &[(String, String)], body: Option<&[u8]>) -> Decision {
-        let set = parse(text).expect("policy parses");
+    fn eval(
+        policies: &[(&str, &str)],
+        method: &str,
+        host: &str,
+        path: &str,
+        headers: &[(String, String)],
+        body: Option<&[u8]>,
+    ) -> Decision {
+        let owned: Vec<(String, String)> = policies
+            .iter()
+            .map(|(n, t)| (n.to_string(), t.to_string()))
+            .collect();
+        let set = build_set(&owned).expect("policies parse");
         let req = CedarRequest {
             host,
             method,
@@ -571,46 +575,65 @@ mod tests {
     }
 
     #[test]
-    fn default_deny_and_host_permit() {
-        let p = r#"permit(principal, action in OneCLI::Action::"read", resource == OneCLI::Host::"en.wikipedia.org");"#;
-        assert_eq!(eval(p, "GET", "en.wikipedia.org:443", "/wiki/X", &[], None), Decision::Allow);
-        assert_eq!(eval(p, "POST", "en.wikipedia.org", "/wiki/X", &[], None), Decision::Deny);
-        assert_eq!(eval(p, "GET", "example.com", "/", &[], None), Decision::Deny);
-        assert_eq!(eval("", "GET", "example.com", "/", &[], None), Decision::Deny);
+    fn default_deny_and_method_permit() {
+        let p = [(
+            "wiki-get",
+            r#"permit(principal, action in [OneCLI::Action::"GET", OneCLI::Action::"HEAD"], resource == OneCLI::Host::"en.wikipedia.org");"#,
+        )];
+        assert_eq!(eval(&p, "GET", "en.wikipedia.org:443", "/wiki/X", &[], None), Decision::Allow);
+        assert_eq!(eval(&p, "HEAD", "en.wikipedia.org", "/", &[], None), Decision::Allow);
+        assert_eq!(eval(&p, "POST", "en.wikipedia.org", "/wiki/X", &[], None), Decision::Deny);
+        assert_eq!(eval(&p, "GET", "example.com", "/", &[], None), Decision::Deny);
+        assert_eq!(eval(&[], "GET", "example.com", "/", &[], None), Decision::Deny);
     }
 
     #[test]
     fn wildcard_host_query_header_and_json() {
-        let p = r#"
-            permit(principal, action, resource) when {
-              resource.name like "*.wikipedia.org" &&
-              context.query has q && context.query.q like "cedar*"
-            };
-            forbid(principal, action == OneCLI::Action::"POST", resource) when {
-              context has json && context.json has to && context.json.to like "*@evil.com"
-            };
-            permit(principal, action == OneCLI::Action::"POST", resource == OneCLI::Host::"api.example.com") when {
-              context.headers has "content-type" && context.headers["content-type"] like "application/json*"
-            };
-        "#;
-        assert_eq!(eval(p, "GET", "de.wikipedia.org", "/w?q=cedar+policy", &[], None), Decision::Allow);
-        assert_eq!(eval(p, "GET", "de.wikipedia.org", "/w?q=other", &[], None), Decision::Deny);
+        let p = [
+            (
+                "wiki-search",
+                r#"permit(principal, action, resource) when {
+                  resource.name like "*.wikipedia.org" &&
+                  context.query has q && context.query.q like "cedar*"
+                };"#,
+            ),
+            (
+                "no-evil-mail",
+                r#"forbid(principal, action == OneCLI::Action::"POST", resource) when {
+                  context has json && context.json has to && context.json.to like "*@evil.com"
+                };"#,
+            ),
+            (
+                "json-posts",
+                r#"permit(principal, action == OneCLI::Action::"POST", resource == OneCLI::Host::"api.example.com") when {
+                  context.headers has "content-type" && context.headers["content-type"] like "application/json*"
+                };"#,
+            ),
+        ];
+        assert_eq!(eval(&p, "GET", "de.wikipedia.org", "/w?q=cedar+policy", &[], None), Decision::Allow);
+        assert_eq!(eval(&p, "GET", "de.wikipedia.org", "/w?q=other", &[], None), Decision::Deny);
         let json = [("content-type".to_string(), "application/json".to_string())];
-        assert_eq!(eval(p, "POST", "api.example.com", "/send", &json, Some(br#"{"to":"a@ok.com","n":1.5}"#)), Decision::Allow);
-        assert_eq!(eval(p, "POST", "api.example.com", "/send", &json, Some(br#"{"to":"x@evil.com"}"#)), Decision::Deny);
+        assert_eq!(eval(&p, "POST", "api.example.com", "/send", &json, Some(br#"{"to":"a@ok.com","n":1.5}"#)), Decision::Allow);
+        assert_eq!(eval(&p, "POST", "api.example.com", "/send", &json, Some(br#"{"to":"x@evil.com"}"#)), Decision::Deny);
     }
 
     #[test]
-    fn annotations_are_checked() {
-        assert!(parse(r#"@rate_limit("10/minute") permit(principal, action, resource);"#).is_ok());
-        assert!(parse(r#"@rate_limit("ten") permit(principal, action, resource);"#).is_err());
-        assert!(parse(r#"@approval forbid(principal, action, resource);"#).is_err());
+    fn one_statement_per_entry_and_annotations() {
+        assert!(parse_policy("a", r#"@rate_limit("10/minute") permit(principal, action, resource);"#).is_ok());
+        assert!(parse_policy("a", r#"@rate_limit("ten") permit(principal, action, resource);"#).is_err());
+        assert!(parse_policy("a", r#"@approval forbid(principal, action, resource);"#).is_err());
+        assert!(parse_policy("a", "permit(principal, action, resource); permit(principal, action, resource);").is_err());
+        assert!(parse_policy("a", "").is_err());
         assert_eq!(parse_rate_limit("5/hour"), Some((5, 3600)));
+        assert_eq!(parse_policy("my rule", "permit(principal, action, resource);").map(|p| display_name(&p)), Ok("my rule".to_string()));
     }
 
     #[test]
     fn principal_attributes_and_workspace() {
-        let p = r#"permit(principal in OneCLI::Workspace::"ws1", action, resource) when { principal.identifier == "ag-1" };"#;
-        assert_eq!(eval(p, "DELETE", "x.com", "/", &[], None), Decision::Allow);
+        let p = [(
+            "group-only",
+            r#"permit(principal in OneCLI::Workspace::"ws1", action, resource) when { principal.identifier == "ag-1" };"#,
+        )];
+        assert_eq!(eval(&p, "DELETE", "x.com", "/", &[], None), Decision::Allow);
     }
 }
