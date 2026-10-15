@@ -60,6 +60,9 @@ aws-sdk-sts = "1"
 aws-sigv4 = "1"
 axum = "0.8"
 base64 = "0.22"
+# Local addition: Cedar policy mode (policy-engine). Pinned exactly; 4.13.0
+# was released 2026-09-15.
+cedar-policy = "=4.13.0"
 clap = { version = "4", features = ["derive"] }
 dashmap = "6"
 # gzip only (the default pure-Rust miniz_oxide backend): upstream error bodies

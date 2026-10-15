@@ -218,6 +218,11 @@ async fn main() -> Result<()> {
     };
     let pool = db::create_pool(&database_url).await?;
     info!("database pool created");
+    // Local addition: Cedar mode loads policy documents with the same pool.
+    policy_engine::cedar::init(pool.clone());
+    if policy_engine::cedar::enabled() {
+        info!("policy engine: Cedar (GATEWAY_POLICY_ENGINE=cedar)");
+    }
     let telemetry_pool = pool.clone();
     // The pool itself moves into the PolicyEngine below, and that moves into
     // the server — so the shutdown sequence needs its own handle to close it.

@@ -28,6 +28,8 @@ mod enforce;
 mod evaluate;
 mod graphql;
 mod inject_select;
+/// Local addition: Cedar policy mode (`GATEWAY_POLICY_ENGINE=cedar`).
+pub mod cedar;
 mod loaders;
 
 // The free direct-user twin, re-exported for ONE consumer: the licensed

@@ -7,6 +7,10 @@ publish = false
 
 [dependencies]
 anyhow = { workspace = true }
+cedar-policy = { workspace = true }
+dashmap = { workspace = true }
+form_urlencoded = { workspace = true }
+tracing = { workspace = true }
 apps = { path = "../apps" }
 cache = { path = "../cache" }
 common = { path = "../common" }

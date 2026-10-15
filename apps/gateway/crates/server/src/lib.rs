@@ -340,6 +340,16 @@ impl GatewayServer {
                 "/v1/cache/invalidate",
                 axum::routing::post(invalidate_cache),
             )
+            // Local addition: parse-check a Cedar policy document with the
+            // gateway's own parser (the api calls this before saving one).
+            .route(
+                "/v1/cedar/validate",
+                axum::routing::post(validate_cedar),
+            )
+            .route(
+                "/v1/cedar/status",
+                axum::routing::get(cedar_status),
+            )
             .route(
                 "/v1/approvals/pending",
                 axum::routing::get(get_pending_approvals),
@@ -477,6 +487,7 @@ async fn invalidate_cache(
     );
     async move {
         flush_workspace_cache(&state, &auth.workspace_id).await;
+        policy_engine::cedar::invalidate(&auth.workspace_id);
         info!("cache invalidated");
         (
             StatusCode::OK,
@@ -485,6 +496,38 @@ async fn invalidate_cache(
     }
     .instrument(span)
     .await
+}
+
+#[derive(serde::Deserialize)]
+struct CedarValidateRequest {
+    policy_text: String,
+}
+
+/// How this gateway decides requests: the engine (Cedar or the rule engine)
+/// and whether deny-by-default is strict. Read by the dashboard's Policy page.
+async fn cedar_status(_auth: AuthUser) -> impl axum::response::IntoResponse {
+    axum::Json(serde_json::json!({
+        "engine": if policy_engine::cedar::enabled() { "cedar" } else { "rules" },
+        "strictDeny": policy_engine::cedar::strict_deny(),
+    }))
+}
+
+/// Parse a Cedar policy document and list its policies. Authenticated like the
+/// other dashboard-facing routes; reads no data.
+async fn validate_cedar(
+    _auth: AuthUser,
+    axum::Json(body): axum::Json<CedarValidateRequest>,
+) -> impl axum::response::IntoResponse {
+    match policy_engine::cedar::summarize(&body.policy_text) {
+        Ok(policies) => (
+            StatusCode::OK,
+            axum::Json(serde_json::json!({ "valid": true, "policies": policies })),
+        ),
+        Err(error) => (
+            StatusCode::OK,
+            axum::Json(serde_json::json!({ "valid": false, "error": error })),
+        ),
+    }
 }
 
 /// Drop every cached CONNECT resolution (and app injection) for a workspace.

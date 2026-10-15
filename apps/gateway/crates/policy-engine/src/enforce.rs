@@ -314,7 +314,21 @@ pub async fn evaluate(
     winning_connection_id: Option<&str>,
     cache: &dyn CacheStore,
     v2: &PolicyV2Rules,
+    headers: &[(String, String)],
 ) -> (PolicyDecision, Option<MatchedRule>) {
+    // Local addition: Cedar mode replaces the first-match engine entirely.
+    if super::cedar::enabled() {
+        let request = super::cedar::CedarRequest {
+            host,
+            method,
+            path,
+            headers,
+            body,
+            has_injections,
+            is_llm_host,
+        };
+        return super::cedar::decide(proxy_ctx, &request, cache).await;
+    }
     // The full identity is resolved at connect (before this runs). If it's somehow
     // absent, no policy can be scoped → treat as unmanaged (allow), never a silent
     // block. An empty rule set (e.g. a resolution-time load error left `v2` empty)
@@ -380,6 +394,18 @@ pub fn would_allow(
     winning_connection_id: Option<&str>,
     v2: &PolicyV2Rules,
 ) -> bool {
+    if super::cedar::enabled() {
+        let request = super::cedar::CedarRequest {
+            host,
+            method,
+            path,
+            headers: &[],
+            body: ConditionBody::None,
+            has_injections,
+            is_llm_host,
+        };
+        return super::cedar::would_allow(proxy_ctx, &request);
+    }
     let (Some(_), Some(_), Some(agent_id)) = (
         proxy_ctx.organization_id.as_deref(),
         proxy_ctx.workspace_id.as_deref(),

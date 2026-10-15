@@ -296,6 +296,7 @@ model Workspace {
   agents           Agent[]
   secrets          Secret[]
   policyRulesV2    PolicyRuleV2[]
+  cedarPolicy      CedarPolicy?
   auditLogs        AuditLog[]
   vaultConnections VaultConnection[]
   onboardingSurvey OnboardingSurvey?
@@ -356,6 +357,7 @@ model User {
   workspaceAccess               WorkspaceAccess[]             @relation("WorkspaceAccessUser")
   createdWorkspaceAccess        WorkspaceAccess[]             @relation("WorkspaceAccessCreator")
   createdPolicyRulesV2          PolicyRuleV2[]                @relation("PolicyRuleV2Creator")
+  updatedCedarPolicies          CedarPolicy[]                 @relation("CedarPolicyUpdater")
   policyRuleIdentities          PolicyRuleIdentity[]          @relation("PolicyRuleIdentityUser")
   appAvailabilityRuleIdentities AppAvailabilityRuleIdentity[] @relation("AppAvailabilityRuleIdentityUser")
   createdAppAvailabilityRules   AppAvailabilityRule[]         @relation("AppAvailabilityRuleCreator")
@@ -2689,4 +2691,20 @@ model AgentEvalSchedule {
 
   @@index([enabled, nextFireAt])
   @@map("agent_eval_schedules")
+}
+
+/// Local addition: one Cedar policy document per workspace, enforced by the
+/// gateway when it runs with GATEWAY_POLICY_ENGINE=cedar (see
+/// docs/cedar-policies.md). No row means every request is denied in that mode.
+model CedarPolicy {
+  workspaceId     String   @id @map("workspace_id")
+  policyText      String   @map("policy_text")
+  updatedByUserId String?  @map("updated_by_user_id")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  workspace     Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  updatedByUser User?     @relation("CedarPolicyUpdater", fields: [updatedByUserId], references: [id], onDelete: SetNull)
+
+  @@map("cedar_policies")
 }

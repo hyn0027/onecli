@@ -17,6 +17,7 @@ common = { path = "../common" }
 context = { path = "../context" }
 db = { path = "../db" }
 ee = { path = "../ee/ee" }
+policy-engine = { path = "../policy-engine" }
 inject = { path = "../inject" }
 proxy = { path = "../proxy" }
 shutdown = { path = "../shutdown" }

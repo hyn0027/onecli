@@ -161,6 +161,7 @@ pub async fn handle_websocket(
         rules.winning_connection_id.as_deref(),
         cache,
         &rules.policy_rules_v2,
+        &crate::forward::cedar_headers(req.headers()),
     )
     .await;
 

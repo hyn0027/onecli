@@ -126,6 +126,7 @@ pub async fn open(
         None,
         cache,
         policy_rules_v2,
+        &[],
     )
     .await;
 

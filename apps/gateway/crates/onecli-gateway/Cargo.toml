@@ -22,6 +22,7 @@ context = { path = "../context" }
 crypto = { path = "../crypto" }
 db = { path = "../db" }
 ee = { path = "../ee/ee" }
+policy-engine = { path = "../policy-engine" }
 server = { path = "../server" }
 shutdown = { path = "../shutdown" }
 telemetry = { path = "../telemetry" }

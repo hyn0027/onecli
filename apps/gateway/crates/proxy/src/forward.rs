@@ -515,6 +515,8 @@ pub async fn forward_request(
     let (condition_buffer, req) =
         if policy_engine::needs_body_buffer(&rules.policy_rules_v2, policy_host, &path)
             || hooks::needs_request_body(rules, host, method.as_str(), &path)
+            || (policy_engine::cedar::enabled()
+                && policy_engine::cedar::needs_body_buffer(proxy_ctx.workspace_id.as_deref()).await)
         {
             let (parts, incoming) = req.into_parts();
             let (buf, fwd_body) =
@@ -579,6 +581,8 @@ pub async fn forward_request(
     // The first-match engine over the published `policy_rules_v2` is authoritative.
     // `policy_host` is the pre-rewrite rule-match host; `is_llm_host(host)` is the
     // effective host for the deny-default carve.
+    // Cedar mode also sees the agent's request headers (before injection).
+    let cedar_headers = cedar_headers(req.headers());
     let (decision, matched_rule) = policy_engine::evaluate(
         proxy_ctx,
         policy_host,
@@ -590,6 +594,7 @@ pub async fn forward_request(
         rules.winning_connection_id.as_deref(),
         cache,
         &rules.policy_rules_v2,
+        &cedar_headers,
     )
     .await;
 
@@ -3091,4 +3096,21 @@ mod tests {
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
         assert_eq!(response.text().await.expect("body"), body);
     }
+}
+
+/// Request headers for Cedar policies, as (lower-case name, value) pairs;
+/// empty unless Cedar mode is on. Non-UTF-8 values are skipped.
+pub(crate) fn cedar_headers(headers: &hyper::HeaderMap) -> Vec<(String, String)> {
+    if !policy_engine::cedar::enabled() {
+        return Vec::new();
+    }
+    headers
+        .iter()
+        .filter_map(|(name, value)| {
+            value
+                .to_str()
+                .ok()
+                .map(|v| (name.as_str().to_ascii_lowercase(), v.to_string()))
+        })
+        .collect()
 }
