@@ -61,8 +61,9 @@ pub(super) struct PolicyRequest {
 impl PolicyRequest {
     /// The deny-default carve: only credentialed, non-LLM traffic can be blocked
     /// by a Default Rule (either level's). Mirrors `forward.rs`'s `enforce_deny`.
+    /// Strict deny removes the carve: the Default Rule covers every request.
     pub(super) fn enforce_deny(&self) -> bool {
-        self.has_injections && !self.is_llm_host
+        policy::strict_deny() || (self.has_injections && !self.is_llm_host)
     }
 }
 

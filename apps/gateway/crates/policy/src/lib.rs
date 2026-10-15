@@ -186,6 +186,19 @@ fn is_git_discovery(path: &str, service: &str) -> bool {
             .any(|p| p.strip_prefix("service=") == Some(service))
 }
 
+/// Strict deny (`GATEWAY_STRICT_DENY=true`): a Default Rule Block covers every
+/// request — uncredentialed ones and LLM hosts included — instead of only
+/// credentialed traffic to non-LLM hosts, so only explicitly allowed traffic
+/// leaves. Requests without an agent token are already refused at CONNECT.
+pub fn strict_deny() -> bool {
+    static STRICT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *STRICT.get_or_init(|| {
+        std::env::var("GATEWAY_STRICT_DENY")
+            .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+            .unwrap_or(false)
+    })
+}
+
 /// Returns true if the host belongs to a known LLM provider.
 /// LLM traffic bypasses deny-by-default policy and is always logged.
 pub fn is_llm_host(host: &str) -> bool {
