@@ -6,6 +6,7 @@ import * as grants from "./grants";
 import * as workspaces from "./workspaces";
 import * as workspaceAccess from "./workspace-access";
 import * as domains from "./domains";
+import * as cedarPolicy from "./cedar-policy";
 import * as invitations from "./invitations";
 import * as provisions from "./provisions";
 import * as org from "./org";
@@ -47,6 +48,7 @@ export {
   workspaces,
   workspaceAccess,
   domains,
+  cedarPolicy,
   invitations,
   provisions,
   org,

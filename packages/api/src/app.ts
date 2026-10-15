@@ -19,6 +19,7 @@ import { ensureEditionDefaults } from "./edition-defaults";
 import { registerEeRoutes } from "./ee";
 import { installLegacyProjectCompat } from "./lib/legacy-project-compat";
 import { errorHandler, notFoundHandler } from "./middleware/error-handler";
+import { cedarPolicyRoutes } from "./routes/cedar-policy";
 import { healthRoutes } from "./routes/health";
 import { instanceRoutes } from "./routes/instance";
 import { agentRoutes } from "./routes/agents";
@@ -198,6 +199,8 @@ export const createApiApp = (
   // Workspace CRUD; the org-scoped access surface (`workspaceAccessRoutes`)
   // composes onto this same base path from the EE block below.
   app.route("/workspaces", workspaceRoutes());
+  // Local addition: Cedar policy document + gateway posture (Policy page).
+  app.route("/cedar-policy", cedarPolicyRoutes());
   // The current-org read (bare /v1/org). Its middleware is per-handler, never
   // `use("*")`, so it cannot shadow the /org/<segment> routers around it.
   app.route("/org", orgRoutes());

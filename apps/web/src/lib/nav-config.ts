@@ -187,6 +187,12 @@ export const getWorkspaceSettingsSections = (
         url: `/w/${workspaceId}/settings/install`,
         icon: Download,
       },
+      // Local addition: default posture, Cedar policies, published rules.
+      {
+        title: "Policy",
+        url: `/w/${workspaceId}/settings/policy`,
+        icon: Shield,
+      },
     ],
   },
 ];

@@ -211,10 +211,11 @@ describe("Install moved into Workspace Settings", () => {
 
   it("is a workspace settings section, beside General", () => {
     const items = getWorkspaceSettingsSections("p1").flatMap((s) => s.items);
-    expect(items.map((i) => i.title)).toEqual(["General", "Install"]);
+    expect(items.map((i) => i.title)).toEqual(["General", "Install", "Policy"]);
     expect(items.map((i) => i.url)).toEqual([
       "/w/p1/settings/general",
       "/w/p1/settings/install",
+      "/w/p1/settings/policy",
     ]);
   });
 });
