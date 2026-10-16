@@ -224,7 +224,7 @@ const PolicyForm = ({
   );
 };
 
-const PolicyCard = ({
+const PolicyRow = ({
   policy,
   group,
   groups,
@@ -235,6 +235,7 @@ const PolicyCard = ({
 }) => {
   const refresh = useRefresh();
   const [editing, setEditing] = useState(false);
+  const [showCode, setShowCode] = useState(false);
 
   const toggle = useMutation({
     mutationFn: (enabled: boolean) => cedarPolicy.update(policy.id, { enabled }),
@@ -256,30 +257,43 @@ const PolicyCard = ({
 
   if (editing) {
     return (
-      <PolicyForm
-        groupId={group.id}
-        groups={groups}
-        initial={policy}
-        onDone={() => setEditing(false)}
-      />
+      <div className="p-3">
+        <PolicyForm groupId={group.id} groups={groups} initial={policy} onDone={() => setEditing(false)} />
+      </div>
     );
   }
 
   const active = policy.enabled && group.enabled;
+  const invalid = policy.validation && !policy.validation.valid;
   return (
-    <div className={`rounded-md border p-4 ${active ? "" : "opacity-60"}`}>
-      <div className="mb-2 flex flex-wrap items-center gap-2">
+    <div className={`px-4 py-2.5 ${active ? "" : "opacity-60"}`}>
+      <div className="flex flex-wrap items-center gap-2">
         <Switch
           checked={policy.enabled}
           disabled={toggle.isPending}
           onCheckedChange={(on) => toggle.mutate(on)}
           aria-label={`Turn ${policy.name} ${policy.enabled ? "off" : "on"}`}
         />
-        <span className="font-mono text-sm font-medium">{policy.name}</span>
+        <button
+          type="button"
+          className="font-mono text-sm font-medium hover:underline"
+          onClick={() => setShowCode((v) => !v)}
+          aria-expanded={showCode}
+        >
+          {policy.name}
+        </button>
         {policy.validation?.valid && <Modifiers summary={policy.validation.policy} />}
-        {!policy.enabled && <Badge variant="outline">off</Badge>}
+        {invalid && <Badge variant="destructive">invalid</Badge>}
         {policy.enabled && !group.enabled && <Badge variant="outline">group off</Badge>}
+        {policy.description && (
+          <span className="text-muted-foreground min-w-0 flex-1 truncate text-sm" title={policy.description}>
+            {policy.description}
+          </span>
+        )}
         <div className="ml-auto flex gap-1">
+          <Button variant="ghost" size="sm" onClick={() => setShowCode((v) => !v)}>
+            {showCode ? "Hide code" : "Code"}
+          </Button>
           <Button variant="ghost" size="sm" onClick={() => setEditing(true)}>
             Edit
           </Button>
@@ -290,15 +304,14 @@ const PolicyCard = ({
           />
         </div>
       </div>
-      {policy.description && (
-        <p className="text-muted-foreground mb-2 text-sm">{policy.description}</p>
+      {showCode && (
+        <pre className="bg-muted mt-2 overflow-x-auto rounded-md p-3 font-mono text-xs leading-relaxed">
+          {policy.policyText}
+        </pre>
       )}
-      <pre className="bg-muted overflow-x-auto rounded-md p-3 font-mono text-xs leading-relaxed">
-        {policy.policyText}
-      </pre>
-      {policy.validation && !policy.validation.valid && (
-        <p className="text-destructive mt-2 text-xs">
-          Not valid — the gateway blocks everything while this is on: {policy.validation.error}
+      {invalid && (
+        <p className="text-destructive mt-1 text-xs">
+          Not valid — the gateway blocks everything while this is on: {policy.validation?.valid === false && policy.validation.error}
         </p>
       )}
     </div>
@@ -379,18 +392,8 @@ const GroupForm = ({
   );
 };
 
-const GroupCard = ({
-  group,
-  groups,
-}: {
-  group: CedarPolicyGroup;
-  groups: CedarPolicyGroup[];
-}) => {
+const GroupSwitch = ({ group }: { group: CedarPolicyGroup }) => {
   const refresh = useRefresh();
-  const [editing, setEditing] = useState(false);
-  const [adding, setAdding] = useState(false);
-  const on = group.policies.filter((p) => p.enabled).length;
-
   const toggle = useMutation({
     mutationFn: (enabled: boolean) => cedarPolicy.updateGroup(group.id, { enabled }),
     onSuccess: (_row, enabled) => {
@@ -399,63 +402,195 @@ const GroupCard = ({
     },
     onError: (err) => toast.error(errorText(err, "Could not switch the group")),
   });
+  return (
+    <Switch
+      checked={group.enabled}
+      disabled={toggle.isPending}
+      onCheckedChange={(next) => toggle.mutate(next)}
+      onClick={(e) => e.stopPropagation()}
+      onKeyDown={(e) => e.stopPropagation()}
+      aria-label={`Turn group ${group.name} ${group.enabled ? "off" : "on"}`}
+    />
+  );
+};
+
+const countOn = (group: CedarPolicyGroup) => group.policies.filter((p) => p.enabled).length;
+
+/** All groups, one clickable row each. */
+const GroupList = ({
+  groups,
+  onOpen,
+}: {
+  groups: CedarPolicyGroup[];
+  onOpen: (id: string) => void;
+}) => (
+  <div className="divide-y rounded-lg border">
+    {groups.map((g) => (
+      <div
+        key={g.id}
+        role="button"
+        tabIndex={0}
+        onClick={() => onOpen(g.id)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") onOpen(g.id);
+        }}
+        className={`hover:bg-muted/50 flex cursor-pointer flex-wrap items-center gap-3 px-4 py-3 ${g.enabled ? "" : "opacity-60"}`}
+      >
+        <GroupSwitch group={g} />
+        <span className="font-medium">{g.name}</span>
+        {g.source && <Badge variant="outline">{g.source}</Badge>}
+        {g.description && (
+          <span className="text-muted-foreground min-w-0 flex-1 truncate text-sm" title={g.description}>
+            {g.description}
+          </span>
+        )}
+        <span className="text-muted-foreground ml-auto shrink-0 text-sm tabular-nums">
+          {g.enabled ? `${countOn(g)} of ${g.policies.length} on` : `off · ${g.policies.length} policies`}
+        </span>
+        <span className="text-muted-foreground" aria-hidden>
+          ›
+        </span>
+      </div>
+    ))}
+    {groups.length === 0 && <p className="text-muted-foreground p-4 text-sm">No groups yet.</p>}
+  </div>
+);
+
+const PAGE_SIZE = 25;
+
+/** One group: header, search, on/off filter, and paged policy rows. */
+const GroupDetail = ({
+  group,
+  groups,
+  onBack,
+}: {
+  group: CedarPolicyGroup;
+  groups: CedarPolicyGroup[];
+  onBack: () => void;
+}) => {
+  const refresh = useRefresh();
+  const [editing, setEditing] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<"all" | "on" | "off">("all");
+  const [page, setPage] = useState(0);
 
   const remove = useMutation({
     mutationFn: () => cedarPolicy.removeGroup(group.id),
     onSuccess: () => {
       toast.success(`Group ${group.name} deleted`);
       refresh();
+      onBack();
     },
     onError: (err) => toast.error(errorText(err, "Could not delete the group")),
   });
 
+  const q = query.trim().toLowerCase();
+  const shown = group.policies.filter(
+    (p) =>
+      (filter === "all" || (filter === "on") === p.enabled) &&
+      (!q || [p.name, p.description ?? "", p.policyText].some((t) => t.toLowerCase().includes(q))),
+  );
+  const pages = Math.max(1, Math.ceil(shown.length / PAGE_SIZE));
+  const current = Math.min(page, pages - 1);
+  const slice = shown.slice(current * PAGE_SIZE, (current + 1) * PAGE_SIZE);
+
   return (
-    <div className="rounded-lg border">
-      {editing ? (
-        <div className="p-3">
-          <GroupForm initial={group} onDone={() => setEditing(false)} />
-        </div>
-      ) : (
-        <div className="bg-muted/40 flex flex-wrap items-center gap-2 border-b px-4 py-3">
-          <Switch
-            checked={group.enabled}
-            disabled={toggle.isPending}
-            onCheckedChange={(next) => toggle.mutate(next)}
-            aria-label={`Turn group ${group.name} ${group.enabled ? "off" : "on"}`}
+    <div className="flex flex-col gap-3">
+      <div>
+        <Button variant="ghost" size="sm" onClick={onBack}>
+          ‹ All groups
+        </Button>
+      </div>
+      <div className="rounded-lg border">
+        {editing ? (
+          <div className="p-3">
+            <GroupForm initial={group} onDone={() => setEditing(false)} />
+          </div>
+        ) : (
+          <div className="bg-muted/40 flex flex-wrap items-center gap-2 border-b px-4 py-3">
+            <GroupSwitch group={group} />
+            <span className="font-medium">{group.name}</span>
+            {group.source && <Badge variant="outline">{group.source}</Badge>}
+            <span className="text-muted-foreground text-sm">
+              {group.enabled ? `${countOn(group)} of ${group.policies.length} on` : "off — none of its policies apply"}
+            </span>
+            <div className="ml-auto flex gap-1">
+              <Button variant="ghost" size="sm" onClick={() => setEditing(true)}>
+                Edit
+              </Button>
+              <DeleteButton
+                title={`Delete group ${group.name}?`}
+                description={`This also deletes its ${group.policies.length} ${group.policies.length === 1 ? "policy" : "policies"}. Switch the group off instead to keep them.`}
+                onConfirm={() => remove.mutate()}
+              />
+            </div>
+            {group.description && <p className="text-muted-foreground w-full text-sm">{group.description}</p>}
+          </div>
+        )}
+
+        <div className="flex flex-wrap items-center gap-2 border-b px-4 py-2">
+          <Input
+            value={query}
+            onChange={(e) => {
+              setQuery(e.target.value);
+              setPage(0);
+            }}
+            placeholder="Search name, description, or code"
+            className="h-8 max-w-xs"
+            aria-label="Search policies"
           />
-          <span className="font-medium">{group.name}</span>
-          {group.source && <Badge variant="outline">{group.source}</Badge>}
-          <span className="text-muted-foreground text-sm">
-            {group.enabled ? `${on} of ${group.policies.length} on` : "off — none of its policies apply"}
+          <div className="flex gap-1" role="group" aria-label="Filter">
+            {(["all", "on", "off"] as const).map((f) => (
+              <Button
+                key={f}
+                size="sm"
+                variant={filter === f ? "secondary" : "ghost"}
+                onClick={() => {
+                  setFilter(f);
+                  setPage(0);
+                }}
+              >
+                {f === "all" ? "All" : f === "on" ? "On" : "Off"}
+              </Button>
+            ))}
+          </div>
+          <span className="text-muted-foreground text-sm tabular-nums">
+            {shown.length === 0
+              ? "no matches"
+              : `${current * PAGE_SIZE + 1}–${current * PAGE_SIZE + slice.length} of ${shown.length}`}
           </span>
           <div className="ml-auto flex gap-1">
-            <Button variant="ghost" size="sm" onClick={() => setEditing(true)}>
-              Edit
-            </Button>
-            <DeleteButton
-              title={`Delete group ${group.name}?`}
-              description={`This also deletes its ${group.policies.length} ${group.policies.length === 1 ? "policy" : "policies"}. Switch the group off instead to keep them.`}
-              onConfirm={() => remove.mutate()}
-            />
-          </div>
-          {group.description && (
-            <p className="text-muted-foreground w-full text-sm">{group.description}</p>
-          )}
-        </div>
-      )}
-      <div className="flex flex-col gap-3 p-4">
-        {group.policies.length === 0 && !adding && (
-          <p className="text-muted-foreground text-sm">No policies in this group.</p>
-        )}
-        {group.policies.map((p) => (
-          <PolicyCard key={p.id} policy={p} group={group} groups={groups} />
-        ))}
-        {adding ? (
-          <PolicyForm groupId={group.id} groups={groups} onDone={() => setAdding(false)} />
-        ) : (
-          <div>
             <Button variant="outline" size="sm" onClick={() => setAdding(true)}>
               Add policy
+            </Button>
+          </div>
+        </div>
+
+        {adding && (
+          <div className="border-b p-3">
+            <PolicyForm groupId={group.id} groups={groups} onDone={() => setAdding(false)} />
+          </div>
+        )}
+        <div className="divide-y">
+          {slice.map((p) => (
+            <PolicyRow key={p.id} policy={p} group={group} groups={groups} />
+          ))}
+          {group.policies.length === 0 && !adding && (
+            <p className="text-muted-foreground p-4 text-sm">No policies in this group.</p>
+          )}
+        </div>
+
+        {pages > 1 && (
+          <div className="flex items-center justify-end gap-2 border-t px-4 py-2">
+            <Button variant="outline" size="sm" disabled={current === 0} onClick={() => setPage(current - 1)}>
+              Previous
+            </Button>
+            <span className="text-muted-foreground text-sm tabular-nums">
+              Page {current + 1} of {pages}
+            </span>
+            <Button variant="outline" size="sm" disabled={current >= pages - 1} onClick={() => setPage(current + 1)}>
+              Next
             </Button>
           </div>
         )}
@@ -501,6 +636,8 @@ const Reference = () => (
 
 export const CedarPolicies = ({ groups }: { groups: CedarPolicyGroup[] }) => {
   const [adding, setAdding] = useState(false);
+  const [openId, setOpenId] = useState<string | null>(null);
+  const open = groups.find((g) => g.id === openId) ?? null;
   return (
     <div className="flex flex-col gap-4">
       {activeCount(groups) === 0 && (
@@ -508,17 +645,21 @@ export const CedarPolicies = ({ groups }: { groups: CedarPolicyGroup[] }) => {
           No policy is on, so every request is blocked — including the model API, so agents cannot run.
         </p>
       )}
-      {groups.map((g) => (
-        <GroupCard key={g.id} group={g} groups={groups} />
-      ))}
-      {adding ? (
-        <GroupForm onDone={() => setAdding(false)} />
+      {open ? (
+        <GroupDetail group={open} groups={groups} onBack={() => setOpenId(null)} />
       ) : (
-        <div>
-          <Button variant="outline" onClick={() => setAdding(true)}>
-            Add group
-          </Button>
-        </div>
+        <>
+          <GroupList groups={groups} onOpen={setOpenId} />
+          {adding ? (
+            <GroupForm onDone={() => setAdding(false)} />
+          ) : (
+            <div>
+              <Button variant="outline" onClick={() => setAdding(true)}>
+                Add group
+              </Button>
+            </div>
+          )}
+        </>
       )}
       <Reference />
     </div>
