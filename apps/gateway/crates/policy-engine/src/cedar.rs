@@ -354,6 +354,44 @@ pub async fn decide(
 /// Whether the request would plainly pass (no approval, no rate limit), from
 /// the policies already in memory; false when none are loaded yet (fail closed).
 /// Side-effect free: never touches rate-limit counters or the database.
+/// Outcome of evaluating a described request (`/v1/cedar/evaluate`, for tooling such
+/// as the risk report): the same decision a live request would get, but nothing is
+/// forwarded and no rate limit is counted.
+#[derive(serde::Serialize, Debug, PartialEq)]
+pub struct Evaluation {
+    /// "allow", "approval" (held for manual approval), or "deny".
+    pub decision: &'static str,
+    /// Cedar id ("group/policy") of the deciding policy: the permit that lets the
+    /// request through, or the forbid that blocks it. None for default deny.
+    pub policy: Option<String>,
+    /// Why, when denied without a deciding policy.
+    pub reason: Option<String>,
+}
+
+/// Evaluate a request with given policies (the core of `evaluate`).
+pub fn evaluate_with(proxy_ctx: &ProxyContext, loaded: &LoadedPolicies, request: &CedarRequest<'_>) -> Evaluation {
+    match judge(proxy_ctx, loaded, request) {
+        Judgement::Allow { rule, .. } => Evaluation { decision: "allow", policy: rule.map(|r| r.name), reason: None },
+        Judgement::Approval { rule, .. } => Evaluation { decision: "approval", policy: Some(rule.name), reason: None },
+        Judgement::DefaultDeny => Evaluation { decision: "deny", policy: None, reason: Some("no permit matched".into()) },
+        Judgement::Blocked { name, rule } => Evaluation {
+            decision: "deny",
+            reason: if rule.is_none() { Some(name) } else { None },
+            policy: rule.map(|r| r.name),
+        },
+    }
+}
+
+/// Evaluate a request described by the caller for one agent of the workspace,
+/// with the workspace's current policies.
+pub async fn evaluate(proxy_ctx: &ProxyContext, request: &CedarRequest<'_>) -> Evaluation {
+    let Some(workspace_id) = proxy_ctx.workspace_id.as_deref() else {
+        return Evaluation { decision: "deny", policy: None, reason: Some("no workspace".into()) };
+    };
+    let loaded = policies_for(workspace_id).await;
+    evaluate_with(proxy_ctx, &loaded, request)
+}
+
 pub fn would_allow(proxy_ctx: &ProxyContext, request: &CedarRequest<'_>) -> bool {
     let Some(workspace_id) = proxy_ctx.workspace_id.as_deref() else {
         return false;
@@ -575,6 +613,37 @@ mod tests {
         };
         let (r, e) = build(&ctx(), "agent1", "ws1", &req).expect("request builds");
         Authorizer::new().is_authorized(&r, &set, &e).decision()
+    }
+
+    #[test]
+    fn evaluate_names_the_deciding_policy() {
+        let owned: Vec<(String, String)> = [
+            ("mcp/protocol", r#"permit(principal, action == OneCLI::Action::"POST", resource == OneCLI::Host::"mcp.example.com") when { context has json && context.json has method && ["initialize", "tools/list"].contains(context.json.method) };"#),
+            ("mcp/read-tools", r#"permit(principal, action == OneCLI::Action::"POST", resource == OneCLI::Host::"mcp.example.com") when { context has json && context.json has method && context.json.method == "tools/call" && context.json has params && context.json.params has name && ["get_me"].contains(context.json.params.name) };"#),
+            ("mcp/write-tools", r#"@approval
+permit(principal, action == OneCLI::Action::"POST", resource == OneCLI::Host::"mcp.example.com") when { context has json && context.json has method && context.json.method == "tools/call" && context.json has params && context.json.params has name && ["delete_file"].contains(context.json.params.name) };"#),
+        ]
+        .iter()
+        .map(|(n, t)| (n.to_string(), t.to_string()))
+        .collect();
+        let loaded = LoadedPolicies { set: build_set(&owned), inspects_body: true };
+        let call = |body: &str| {
+            let req = CedarRequest {
+                host: "mcp.example.com",
+                method: "POST",
+                path: "/mcp/",
+                headers: &[],
+                body: ConditionBody::Full(body.as_bytes()),
+                has_injections: true,
+                is_llm_host: false,
+            };
+            evaluate_with(&ctx(), &loaded, &req)
+        };
+        let tool = |name: &str| format!(r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"{name}","arguments":{{}}}}}}"#);
+        assert_eq!(call(&tool("get_me")), Evaluation { decision: "allow", policy: Some("mcp/read-tools".into()), reason: None });
+        assert_eq!(call(&tool("delete_file")), Evaluation { decision: "approval", policy: Some("mcp/write-tools".into()), reason: None });
+        assert_eq!(call(&tool("issue_write")).decision, "deny");
+        assert_eq!(call(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#).policy.as_deref(), Some("mcp/protocol"));
     }
 
     #[test]

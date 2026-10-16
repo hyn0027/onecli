@@ -106,6 +106,23 @@ when { context.has_body && !(context.body like "*@example.org*") };
 
 `like` supports `*` wildcards only; Cedar has no regular expressions.
 
+## Evaluating a request
+
+`POST /v1/cedar/evaluate` on the gateway (`127.0.0.1:10255`, dashboard session or API
+key) decides a described request with the workspace's current policies, exactly as
+for a live request of that agent, without forwarding it or counting rate limits:
+
+```json
+{"agent_id": "<agent id>", "method": "POST", "host": "api.githubcopilot.com",
+ "path": "/mcp/", "body": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"get_me\"}}",
+ "headers": {}, "has_credential": true}
+```
+
+returns `{"decision": "allow" | "approval" | "deny", "policy": "<group>/<policy>" | null, "reason": ...}`.
+The agent must belong to the caller's workspace. Tooling (the agent-risk report)
+uses it to show which policy entry lets a request through instead of re-implementing
+Cedar.
+
 ## Command line
 
 `scripts/onecli-policy` calls the API with an API key (Python 3 standard

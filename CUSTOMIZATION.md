@@ -53,6 +53,7 @@ which secrets and app connections are injected for which agents. Full reference:
 - `apps/gateway/crates/server/src/lib.rs`: `POST /v1/cedar/validate` (parse with the gateway's parser) and `GET /v1/cedar/status` (engine and strict-deny state), both user-authenticated; cache invalidation also drops cached Cedar policies.
 - `apps/gateway/crates/onecli-gateway/src/main.rs`: gives the Cedar loader the database pool and logs the engine.
 - `apps/gateway/crates/{server,onecli-gateway}/Cargo.toml`: depend on `policy-engine`.
+- `cedar.rs` `evaluate` / `evaluate_with` and `server` route `POST /v1/cedar/evaluate` (server now also depends on `policy` and `sqlx`): decide a described request for an agent of the caller's workspace, returning the decision and the deciding policy's Cedar id; nothing is forwarded or rate-counted. Unit test `evaluate_names_the_deciding_policy`.
 
 ### 3. Policy storage, API, and dashboard page
 

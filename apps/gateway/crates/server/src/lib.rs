@@ -350,6 +350,11 @@ impl GatewayServer {
                 "/v1/cedar/status",
                 axum::routing::get(cedar_status),
             )
+            // Local addition: decide a described request (no forwarding) for tooling.
+            .route(
+                "/v1/cedar/evaluate",
+                axum::routing::post(evaluate_cedar),
+            )
             .route(
                 "/v1/approvals/pending",
                 axum::routing::get(get_pending_approvals),
@@ -532,6 +537,78 @@ async fn validate_cedar(
             axum::Json(serde_json::json!({ "valid": false, "error": error })),
         ),
     }
+}
+
+#[derive(serde::Deserialize)]
+struct CedarEvaluateRequest {
+    /// OneCLI agent id; must belong to the caller's workspace.
+    agent_id: String,
+    method: String,
+    host: String,
+    /// Path including any query string.
+    #[serde(default = "root_path")]
+    path: String,
+    #[serde(default)]
+    headers: std::collections::BTreeMap<String, String>,
+    /// Request body as text (e.g. a JSON-RPC message).
+    #[serde(default)]
+    body: Option<String>,
+    /// Whether the gateway would inject a stored credential (context.has_credential).
+    #[serde(default)]
+    has_credential: bool,
+}
+
+fn root_path() -> String {
+    "/".into()
+}
+
+/// Decide a described request with the workspace's current Cedar policies, exactly
+/// as for a live request of that agent, without forwarding it or counting rate
+/// limits. Returns the decision and the deciding policy's Cedar id.
+async fn evaluate_cedar(
+    State(state): State<GatewayState>,
+    auth: AuthUser,
+    axum::Json(body): axum::Json<CedarEvaluateRequest>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let agent: Option<(String, String)> = match sqlx::query_as(
+        "SELECT identifier, name FROM agents WHERE id = $1 AND workspace_id = $2",
+    )
+    .bind(&body.agent_id)
+    .bind(&auth.workspace_id)
+    .fetch_optional(&state.policy_engine.pool)
+    .await
+    {
+        Ok(row) => row,
+        Err(e) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(serde_json::json!({ "error": e.to_string() }))).into_response();
+        }
+    };
+    let Some((identifier, name)) = agent else {
+        return (StatusCode::NOT_FOUND, axum::Json(serde_json::json!({ "error": "agent not found in this workspace" }))).into_response();
+    };
+    let ctx = context::ProxyContext {
+        workspace_id: Some(auth.workspace_id.clone()),
+        organization_id: None,
+        agent_id: Some(body.agent_id.clone()),
+        agent_name: Some(name),
+        agent_identifier: Some(identifier),
+        agent_token: String::new(),
+    };
+    let headers: Vec<(String, String)> = body.headers.into_iter().collect();
+    let request = policy_engine::cedar::CedarRequest {
+        host: &body.host,
+        method: &body.method,
+        path: &body.path,
+        headers: &headers,
+        body: body
+            .body
+            .as_deref()
+            .map_or(policy::ConditionBody::None, |b| policy::ConditionBody::Full(b.as_bytes())),
+        has_injections: body.has_credential,
+        is_llm_host: policy::is_llm_host(&body.host),
+    };
+    axum::Json(policy_engine::cedar::evaluate(&ctx, &request).await).into_response()
 }
 
 /// Drop every cached CONNECT resolution (and app injection) for a workspace.
