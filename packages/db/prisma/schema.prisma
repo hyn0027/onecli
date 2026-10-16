@@ -297,6 +297,7 @@ model Workspace {
   secrets          Secret[]
   policyRulesV2    PolicyRuleV2[]
   cedarPolicyRules CedarPolicyRule[]
+  cedarPolicyGroups CedarPolicyGroup[]
   auditLogs        AuditLog[]
   vaultConnections VaultConnection[]
   onboardingSurvey OnboardingSurvey?
@@ -358,6 +359,7 @@ model User {
   createdWorkspaceAccess        WorkspaceAccess[]             @relation("WorkspaceAccessCreator")
   createdPolicyRulesV2          PolicyRuleV2[]                @relation("PolicyRuleV2Creator")
   updatedCedarPolicyRules       CedarPolicyRule[]             @relation("CedarPolicyRuleUpdater")
+  updatedCedarPolicyGroups      CedarPolicyGroup[]            @relation("CedarPolicyGroupUpdater")
   policyRuleIdentities          PolicyRuleIdentity[]          @relation("PolicyRuleIdentityUser")
   appAvailabilityRuleIdentities AppAvailabilityRuleIdentity[] @relation("AppAvailabilityRuleIdentityUser")
   createdAppAvailabilityRules   AppAvailabilityRule[]         @relation("AppAvailabilityRuleCreator")
@@ -2696,10 +2698,39 @@ model AgentEvalSchedule {
 /// Local addition: one Cedar policy statement per row. A workspace's enabled
 /// rows form the policy set the gateway decides every request with (see
 /// docs/cedar-policies.md); no enabled row means every request is denied.
+/// Local addition: a named group of Cedar policies with its own on/off switch.
+/// A policy applies only when it and its group are both on. `source` is an
+/// optional machine key (e.g. "skill:agent-browser", "mcp:github") so tooling
+/// can find, replace, or remove the group it created; null for groups made by hand.
+model CedarPolicyGroup {
+  id              String   @id @default(uuid())
+  workspaceId     String   @map("workspace_id")
+  /// Unique per workspace; prefixes its policies' Cedar ids ("group/policy").
+  name            String
+  description     String?
+  enabled         Boolean  @default(true)
+  position        Int      @default(0)
+  source          String?
+  updatedByUserId String?  @map("updated_by_user_id")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  workspace     Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  updatedByUser User?             @relation("CedarPolicyGroupUpdater", fields: [updatedByUserId], references: [id], onDelete: SetNull)
+  policies      CedarPolicyRule[]
+
+  @@unique([workspaceId, name])
+  @@unique([workspaceId, source])
+  @@index([workspaceId])
+  @@map("cedar_policy_groups")
+}
+
+/// Local addition: one Cedar statement with its own on/off switch, in a group.
 model CedarPolicyRule {
   id              String   @id @default(uuid())
   workspaceId     String   @map("workspace_id")
-  /// Unique per workspace; also the policy's Cedar id (logs, 403 responses).
+  groupId         String   @map("group_id")
+  /// Unique within its group; the Cedar id is "group/name" (logs, 403 responses).
   name            String
   description     String?
   policyText      String   @map("policy_text")
@@ -2709,10 +2740,11 @@ model CedarPolicyRule {
   createdAt       DateTime @default(now()) @map("created_at")
   updatedAt       DateTime @updatedAt @map("updated_at")
 
-  workspace     Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  updatedByUser User?     @relation("CedarPolicyRuleUpdater", fields: [updatedByUserId], references: [id], onDelete: SetNull)
+  workspace     Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  group         CedarPolicyGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  updatedByUser User?            @relation("CedarPolicyRuleUpdater", fields: [updatedByUserId], references: [id], onDelete: SetNull)
 
-  @@unique([workspaceId, name])
+  @@unique([groupId, name])
   @@index([workspaceId])
   @@map("cedar_policy_rules")
 }

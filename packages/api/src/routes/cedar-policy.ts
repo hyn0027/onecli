@@ -1,19 +1,29 @@
 /**
- * Local addition: the workspace's Cedar policies (one statement each, with an
- * on/off switch) and the gateway's enforcement posture, for the dashboard's
- * Workspace Settings → Policy page.
+ * Local addition: the workspace's Cedar policies, organized in groups, and the
+ * gateway's enforcement posture, for the dashboard's Workspace Settings →
+ * Policy page and for scripts (API key auth works too).
  *
- *   GET    /v1/cedar-policy                policies, gateway status, credential
- *                                          grants with their secrets' configuration
- *   POST   /v1/cedar-policy/validate       check one policy (nothing is saved)
- *   POST   /v1/cedar-policy/policies       add a policy        (workspace managers)
- *   PATCH  /v1/cedar-policy/policies/:id   edit / switch on-off (workspace managers)
- *   DELETE /v1/cedar-policy/policies/:id   remove a policy     (workspace managers)
+ * Every policy (one Cedar statement) belongs to a group. A policy applies only
+ * when it and its group are both switched on; its Cedar id is "group/policy".
  *
- * Parsing is done by the gateway (`/v1/cedar/validate`) so the dashboard and
- * enforcement can never disagree about what a policy means. The gateway decides
- * every request with the enabled policies; `policy_rules_v2` rules only grant
- * credentials.
+ *   GET    /v1/cedar-policy                 groups with their policies, gateway
+ *                                           status, credential grants with their
+ *                                           secrets' configuration
+ *   POST   /v1/cedar-policy/validate        check one policy (nothing is saved)
+ *   POST   /v1/cedar-policy/groups          add a group
+ *   PUT    /v1/cedar-policy/groups/sync     create or replace a group and all its
+ *                                           policies in one step, keyed by `source`
+ *                                           (e.g. "skill:agent-browser") or name
+ *   PATCH  /v1/cedar-policy/groups/:id      rename / describe / switch a group
+ *   DELETE /v1/cedar-policy/groups/:id      remove a group and its policies
+ *   POST   /v1/cedar-policy/policies        add a policy to a group
+ *   PATCH  /v1/cedar-policy/policies/:id    edit / switch / move a policy
+ *   DELETE /v1/cedar-policy/policies/:id    remove a policy
+ *
+ * Writes need workspace management rights. Parsing is done by the gateway
+ * (`/v1/cedar/validate`) so the dashboard and enforcement can never disagree
+ * about what a policy means. The gateway decides every request with the
+ * policies that are on; `policy_rules_v2` rules only grant credentials.
  */
 import { Hono } from "hono";
 import { z } from "zod";
@@ -35,21 +45,65 @@ const nameSchema = z
   .max(100, "name must be at most 100 characters")
   .regex(/^[A-Za-z0-9 _.:-]+$/, "name may use letters, digits, spaces, and _ . : -");
 
+const descriptionSchema = z.string().max(500).optional().nullable();
+const policyTextSchema = z.string().min(1).max(MAX_POLICY_LENGTH);
+const sourceSchema = z.string().trim().min(1).max(200).optional().nullable();
+
 const createSchema = z.object({
+  groupId: z.string().min(1, "groupId is required"),
   name: nameSchema,
-  description: z.string().max(500).optional().nullable(),
-  policyText: z.string().min(1).max(MAX_POLICY_LENGTH),
+  description: descriptionSchema,
+  policyText: policyTextSchema,
   enabled: z.boolean().optional(),
 });
 
 const updateSchema = z
   .object({
+    groupId: z.string().min(1).optional(),
     name: nameSchema.optional(),
-    description: z.string().max(500).optional().nullable(),
-    policyText: z.string().min(1).max(MAX_POLICY_LENGTH).optional(),
+    description: descriptionSchema,
+    policyText: policyTextSchema.optional(),
     enabled: z.boolean().optional(),
   })
   .refine((d) => Object.keys(d).length > 0, "nothing to update");
+
+const groupCreateSchema = z.object({
+  name: nameSchema,
+  description: descriptionSchema,
+  enabled: z.boolean().optional(),
+  source: sourceSchema,
+});
+
+const groupUpdateSchema = z
+  .object({
+    name: nameSchema.optional(),
+    description: descriptionSchema,
+    enabled: z.boolean().optional(),
+    source: sourceSchema,
+  })
+  .refine((d) => Object.keys(d).length > 0, "nothing to update");
+
+const groupSyncSchema = z
+  .object({
+    source: sourceSchema,
+    name: nameSchema,
+    description: descriptionSchema,
+    enabled: z.boolean().optional(),
+    policies: z
+      .array(
+        z.object({
+          name: nameSchema,
+          description: descriptionSchema,
+          policyText: policyTextSchema,
+          enabled: z.boolean().optional(),
+        }),
+      )
+      .max(200),
+  })
+  .refine(
+    (d) => new Set(d.policies.map((p) => p.name)).size === d.policies.length,
+    "policy names must be unique within the group",
+  );
 
 const validateSchema = z.object({
   name: z.string().max(100).optional(),
@@ -226,6 +280,7 @@ const grantContext = async (workspaceId: string) => {
 
 const POLICY_SELECT = {
   id: true,
+  groupId: true,
   name: true,
   description: true,
   policyText: true,
@@ -234,20 +289,58 @@ const POLICY_SELECT = {
   updatedAt: true,
 } as const;
 
+const GROUP_SELECT = {
+  id: true,
+  name: true,
+  description: true,
+  enabled: true,
+  position: true,
+  source: true,
+  updatedAt: true,
+} as const;
+
 /** The policy row, scoped to the caller's workspace (404 otherwise). */
 const findPolicy = async (workspaceId: string, id: string) => {
   const row = await db.cedarPolicyRule.findFirst({
     where: { id, workspaceId },
-    select: POLICY_SELECT,
+    select: { ...POLICY_SELECT, group: { select: { name: true } } },
   });
   if (!row) throw new ServiceError("NOT_FOUND", "Policy not found");
   return row;
 };
 
-const nameTaken = async (workspaceId: string, name: string, exceptId?: string) =>
+/** The group row, scoped to the caller's workspace (404 otherwise). */
+const findGroup = async (workspaceId: string, id: string) => {
+  const row = await db.cedarPolicyGroup.findFirst({
+    where: { id, workspaceId },
+    select: GROUP_SELECT,
+  });
+  if (!row) throw new ServiceError("NOT_FOUND", "Policy group not found");
+  return row;
+};
+
+const policyNameTaken = async (groupId: string, name: string, exceptId?: string) =>
   (await db.cedarPolicyRule.count({
+    where: { groupId, name, ...(exceptId ? { NOT: { id: exceptId } } : {}) },
+  })) > 0;
+
+const groupNameTaken = async (workspaceId: string, name: string, exceptId?: string) =>
+  (await db.cedarPolicyGroup.count({
     where: { workspaceId, name, ...(exceptId ? { NOT: { id: exceptId } } : {}) },
   })) > 0;
+
+const groupSourceTaken = async (workspaceId: string, source: string, exceptId?: string) =>
+  (await db.cedarPolicyGroup.count({
+    where: { workspaceId, source, ...(exceptId ? { NOT: { id: exceptId } } : {}) },
+  })) > 0;
+
+/** The Cedar id the gateway gives a policy. */
+const cedarId = (group: string, policy: string) => `${group}/${policy}`;
+
+const nextGroupPosition = async (workspaceId: string) =>
+  ((
+    await db.cedarPolicyGroup.aggregate({ where: { workspaceId }, _max: { position: true } })
+  )._max.position ?? -1) + 1;
 
 export const cedarPolicyRoutes = () => {
   const app = new Hono<ApiEnv>();
@@ -255,30 +348,45 @@ export const cedarPolicyRoutes = () => {
 
   app.get("/", async (c) => {
     const workspaceId = requireWorkspaceId(c.get("auth"));
-    const [rows, status, published, grantDetails] = await Promise.all([
-      db.cedarPolicyRule.findMany({
+    const [groups, status, published, grantDetails] = await Promise.all([
+      db.cedarPolicyGroup.findMany({
         where: { workspaceId },
         orderBy: [{ position: "asc" }, { createdAt: "asc" }],
-        select: POLICY_SELECT,
+        select: {
+          ...GROUP_SELECT,
+          policies: {
+            orderBy: [{ position: "asc" }, { createdAt: "asc" }],
+            select: POLICY_SELECT,
+          },
+        },
       }),
       gatewayStatus(c.req.raw),
       publishedRules(workspaceId),
       grantContext(workspaceId),
     ]);
-    const policies = await Promise.all(
-      rows.map(async (row) => ({
-        ...row,
-        validation: await validateWithGateway(c.req.raw, row.name, row.policyText).catch(
-          (err: unknown) =>
-            ({
-              valid: false,
-              error: err instanceof Error ? err.message : String(err),
-            }) as Validation,
+    const withValidation = await Promise.all(
+      groups.map(async (group) => ({
+        ...group,
+        policies: await Promise.all(
+          group.policies.map(async (row) => ({
+            ...row,
+            validation: await validateWithGateway(
+              c.req.raw,
+              cedarId(group.name, row.name),
+              row.policyText,
+            ).catch(
+              (err: unknown) =>
+                ({
+                  valid: false,
+                  error: err instanceof Error ? err.message : String(err),
+                }) as Validation,
+            ),
+          })),
         ),
       })),
     );
     return c.json({
-      policies,
+      groups: withValidation,
       gateway: status,
       rules: published,
       secrets: grantDetails.secrets,
@@ -294,22 +402,163 @@ export const cedarPolicyRoutes = () => {
     );
   });
 
+  // ── Groups ────────────────────────────────────────────────────────────────
+
+  app.post("/groups", async (c) => {
+    const auth = c.get("auth");
+    const workspaceId = requireWorkspaceId(auth);
+    await requireWorkspaceManagement(auth, workspaceId);
+    const body = parse(groupCreateSchema, await c.req.json().catch(() => null));
+    if (await groupNameTaken(workspaceId, body.name)) {
+      throw new ServiceError("CONFLICT", `A group named "${body.name}" already exists`);
+    }
+    if (body.source && (await groupSourceTaken(workspaceId, body.source))) {
+      throw new ServiceError("CONFLICT", `A group with source "${body.source}" already exists`);
+    }
+    const row = await db.cedarPolicyGroup.create({
+      data: {
+        workspaceId,
+        name: body.name,
+        description: body.description ?? null,
+        enabled: body.enabled ?? true,
+        source: body.source ?? null,
+        position: await nextGroupPosition(workspaceId),
+        updatedByUserId: auth.userId,
+      },
+      select: GROUP_SELECT,
+    });
+    invalidateGatewayCache(c.req.raw);
+    return c.json(row, 201);
+  });
+
+  // Create or replace a whole group: found by `source` when given, else by
+  // name. Its policies become exactly the ones sent. Everything is validated
+  // before anything is written, and the write is one transaction.
+  app.put("/groups/sync", async (c) => {
+    const auth = c.get("auth");
+    const workspaceId = requireWorkspaceId(auth);
+    await requireWorkspaceManagement(auth, workspaceId);
+    const body = parse(groupSyncSchema, await c.req.json().catch(() => null));
+    const existing = await db.cedarPolicyGroup.findFirst({
+      where: body.source ? { workspaceId, source: body.source } : { workspaceId, name: body.name },
+      select: { id: true, enabled: true },
+    });
+    if (await groupNameTaken(workspaceId, body.name, existing?.id)) {
+      throw new ServiceError("CONFLICT", `A different group is already named "${body.name}"`);
+    }
+    for (const p of body.policies) {
+      await requireValid(c.req.raw, cedarId(body.name, p.name), p.policyText).catch((err) => {
+        throw new ServiceError("BAD_REQUEST", `${p.name}: ${err instanceof Error ? err.message : String(err)}`);
+      });
+    }
+    const position = existing ? undefined : await nextGroupPosition(workspaceId);
+    const group = await db.$transaction(async (tx) => {
+      const g = existing
+        ? await tx.cedarPolicyGroup.update({
+            where: { id: existing.id },
+            data: {
+              name: body.name,
+              description: body.description ?? null,
+              enabled: body.enabled ?? existing.enabled,
+              source: body.source ?? null,
+              updatedByUserId: auth.userId,
+            },
+            select: { id: true },
+          })
+        : await tx.cedarPolicyGroup.create({
+            data: {
+              workspaceId,
+              name: body.name,
+              description: body.description ?? null,
+              enabled: body.enabled ?? true,
+              source: body.source ?? null,
+              position: position ?? 0,
+              updatedByUserId: auth.userId,
+            },
+            select: { id: true },
+          });
+      await tx.cedarPolicyRule.deleteMany({ where: { groupId: g.id } });
+      await tx.cedarPolicyRule.createMany({
+        data: body.policies.map((p, i) => ({
+          workspaceId,
+          groupId: g.id,
+          name: p.name,
+          description: p.description ?? null,
+          policyText: p.policyText,
+          enabled: p.enabled ?? true,
+          position: i,
+          updatedByUserId: auth.userId,
+        })),
+      });
+      return tx.cedarPolicyGroup.findUniqueOrThrow({
+        where: { id: g.id },
+        select: {
+          ...GROUP_SELECT,
+          policies: { orderBy: { position: "asc" }, select: POLICY_SELECT },
+        },
+      });
+    });
+    invalidateGatewayCache(c.req.raw);
+    return c.json(group, existing ? 200 : 201);
+  });
+
+  app.patch("/groups/:id", async (c) => {
+    const auth = c.get("auth");
+    const workspaceId = requireWorkspaceId(auth);
+    await requireWorkspaceManagement(auth, workspaceId);
+    const current = await findGroup(workspaceId, c.req.param("id"));
+    const body = parse(groupUpdateSchema, await c.req.json().catch(() => null));
+    if (body.name && body.name !== current.name && (await groupNameTaken(workspaceId, body.name, current.id))) {
+      throw new ServiceError("CONFLICT", `A group named "${body.name}" already exists`);
+    }
+    if (body.source && (await groupSourceTaken(workspaceId, body.source, current.id))) {
+      throw new ServiceError("CONFLICT", `A group with source "${body.source}" already exists`);
+    }
+    const row = await db.cedarPolicyGroup.update({
+      where: { id: current.id },
+      data: {
+        ...(body.name !== undefined ? { name: body.name } : {}),
+        ...(body.description !== undefined ? { description: body.description } : {}),
+        ...(body.enabled !== undefined ? { enabled: body.enabled } : {}),
+        ...(body.source !== undefined ? { source: body.source } : {}),
+        updatedByUserId: auth.userId,
+      },
+      select: GROUP_SELECT,
+    });
+    invalidateGatewayCache(c.req.raw);
+    return c.json(row);
+  });
+
+  app.delete("/groups/:id", async (c) => {
+    const auth = c.get("auth");
+    const workspaceId = requireWorkspaceId(auth);
+    await requireWorkspaceManagement(auth, workspaceId);
+    const current = await findGroup(workspaceId, c.req.param("id"));
+    await db.cedarPolicyGroup.delete({ where: { id: current.id } });
+    invalidateGatewayCache(c.req.raw);
+    return c.body(null, 204);
+  });
+
+  // ── Policies ──────────────────────────────────────────────────────────────
+
   app.post("/policies", async (c) => {
     const auth = c.get("auth");
     const workspaceId = requireWorkspaceId(auth);
     await requireWorkspaceManagement(auth, workspaceId);
     const body = parse(createSchema, await c.req.json().catch(() => null));
-    if (await nameTaken(workspaceId, body.name)) {
-      throw new ServiceError("CONFLICT", `A policy named "${body.name}" already exists`);
+    const group = await findGroup(workspaceId, body.groupId);
+    if (await policyNameTaken(group.id, body.name)) {
+      throw new ServiceError("CONFLICT", `Group "${group.name}" already has a policy named "${body.name}"`);
     }
-    await requireValid(c.req.raw, body.name, body.policyText);
+    await requireValid(c.req.raw, cedarId(group.name, body.name), body.policyText);
     const last = await db.cedarPolicyRule.aggregate({
-      where: { workspaceId },
+      where: { groupId: group.id },
       _max: { position: true },
     });
     const row = await db.cedarPolicyRule.create({
       data: {
         workspaceId,
+        groupId: group.id,
         name: body.name,
         description: body.description ?? null,
         policyText: body.policyText,
@@ -329,16 +578,21 @@ export const cedarPolicyRoutes = () => {
     await requireWorkspaceManagement(auth, workspaceId);
     const current = await findPolicy(workspaceId, c.req.param("id"));
     const body = parse(updateSchema, await c.req.json().catch(() => null));
+    const group =
+      body.groupId && body.groupId !== current.groupId
+        ? await findGroup(workspaceId, body.groupId)
+        : { id: current.groupId, name: current.group.name };
     const name = body.name ?? current.name;
-    if (name !== current.name && (await nameTaken(workspaceId, name, current.id))) {
-      throw new ServiceError("CONFLICT", `A policy named "${name}" already exists`);
+    if ((name !== current.name || group.id !== current.groupId) && (await policyNameTaken(group.id, name, current.id))) {
+      throw new ServiceError("CONFLICT", `Group "${group.name}" already has a policy named "${name}"`);
     }
-    if (body.policyText !== undefined || name !== current.name) {
-      await requireValid(c.req.raw, name, body.policyText ?? current.policyText);
+    if (body.policyText !== undefined || name !== current.name || group.id !== current.groupId) {
+      await requireValid(c.req.raw, cedarId(group.name, name), body.policyText ?? current.policyText);
     }
     const row = await db.cedarPolicyRule.update({
       where: { id: current.id },
       data: {
+        ...(group.id !== current.groupId ? { groupId: group.id } : {}),
         ...(body.name !== undefined ? { name: body.name } : {}),
         ...(body.description !== undefined ? { description: body.description } : {}),
         ...(body.policyText !== undefined ? { policyText: body.policyText } : {}),

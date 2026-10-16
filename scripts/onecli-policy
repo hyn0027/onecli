@@ -1,0 +1,327 @@
+#!/usr/bin/env python3
+"""Manage the gateway's Cedar policy groups and policies from the shell.
+
+Local addition (branch local-2.14.0). Talks to the OneCLI API
+(/v1/cedar-policy) with an API key, so every change goes through the same
+validation as the dashboard and takes effect immediately. Policies are named
+<group>/<policy>; a group can also be named by its source key.
+
+Environment:
+  ONECLI_API_KEY   API key (dashboard → API keys); required
+  ONECLI_URL       API base, default http://127.0.0.1:10256
+
+Examples:
+  onecli-policy list
+  onecli-policy show default/read-wikipedia
+  onecli-policy group add web-research --description "Research sites"
+  onecli-policy add web-research/arxiv arxiv.cedar        # file, or - for stdin
+  onecli-policy off web-research/arxiv
+  onecli-policy group off web-research
+  onecli-policy edit web-research/arxiv --file arxiv.cedar --description "arXiv reads"
+  onecli-policy mv default/read-wikipedia web-research
+  onecli-policy rm web-research/arxiv
+  onecli-policy group rm web-research --yes
+  onecli-policy validate arxiv.cedar
+  onecli-policy sync skill-agent-browser.json               # create/replace a whole group
+
+A sync file is JSON: {"name": ..., "source": "skill:agent-browser",
+"description": ..., "enabled": true, "policies": [{"name": ..., "policyText": ...,
+"description": ..., "enabled": true}]}. It replaces the group's policies with
+exactly the ones listed (found by source when given, else by name).
+"""
+
+import argparse
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+
+BASE = os.environ.get("ONECLI_URL", "http://127.0.0.1:10256").rstrip("/") + "/v1/cedar-policy"
+
+
+def die(msg: str) -> None:
+    sys.exit(f"onecli-policy: {msg}")
+
+
+def call(method: str, path: str = "", body: object | None = None) -> object:
+    key = os.environ.get("ONECLI_API_KEY")
+    if not key:
+        die("set ONECLI_API_KEY (an API key from the dashboard)")
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(BASE + path, data=data, method=method)
+    req.add_header("Authorization", f"Bearer {key}")
+    if data is not None:
+        req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=60) as res:
+            raw = res.read()
+            return json.loads(raw) if raw else None
+    except urllib.error.HTTPError as e:
+        try:
+            err = json.loads(e.read())
+            msg = err.get("error") or err.get("message") or err
+            if isinstance(msg, dict):
+                msg = msg.get("message") or msg
+        except ValueError:
+            msg = e.reason
+        die(f"{method} {path or '/'}: HTTP {e.code}: {msg}")
+    except urllib.error.URLError as e:
+        die(f"cannot reach {BASE}: {e.reason}")
+
+
+def state() -> dict:
+    return call("GET")
+
+
+def find_group(st: dict, ref: str) -> dict:
+    g = next((g for g in st["groups"] if g["name"] == ref), None) or next(
+        (g for g in st["groups"] if g.get("source") == ref), None)
+    if not g:
+        die(f"no group named (or with source) '{ref}'; groups: {', '.join(g['name'] for g in st['groups']) or 'none'}")
+    return g
+
+
+def split_ref(ref: str) -> tuple[str, str]:
+    if "/" not in ref:
+        die(f"name a policy as <group>/<policy>, got '{ref}'")
+    group, policy = ref.split("/", 1)
+    return group, policy
+
+
+def find_policy(st: dict, ref: str) -> tuple[dict, dict]:
+    gname, pname = split_ref(ref)
+    g = find_group(st, gname)
+    p = next((p for p in g["policies"] if p["name"] == pname), None)
+    if not p:
+        die(f"group '{g['name']}' has no policy '{pname}'; it has: {', '.join(p['name'] for p in g['policies']) or 'none'}")
+    return g, p
+
+
+def read_text(path: str) -> str:
+    if path == "-":
+        return sys.stdin.read()
+    try:
+        with open(path) as f:
+            return f.read()
+    except OSError as e:
+        die(f"cannot read {path}: {e.strerror}")
+
+
+def onoff(flag: bool) -> str:
+    return "on " if flag else "off"
+
+
+# ── commands ─────────────────────────────────────────────────────────────────
+
+def cmd_list(a) -> None:
+    st = state()
+    if a.json:
+        print(json.dumps(st["groups"], indent=2))
+        return
+    gw = st.get("gateway") or {}
+    print(f"gateway: {gw.get('engine', 'unknown')}, strict deny {'on' if gw.get('strictDeny') else 'off'}")
+    if not st["groups"]:
+        print("no groups — every request is blocked")
+    for g in st["groups"]:
+        src = f"  [{g['source']}]" if g.get("source") else ""
+        print(f"\n[{onoff(g['enabled'])}] {g['name']}{src}" + (f" — {g['description']}" if g.get("description") else ""))
+        for p in g["policies"]:
+            v = p.get("validation") or {}
+            info = v.get("policy") or {}
+            tags = [info.get("effect", "?")] if v.get("valid") else ["INVALID"]
+            if info.get("approval"):
+                tags.append("approval")
+            if info.get("rate_limit"):
+                tags.append(f"rate {info['rate_limit']}")
+            applied = p["enabled"] and g["enabled"]
+            print(f"  [{onoff(p['enabled'])}] {p['name']:<28} {', '.join(tags)}" + ("" if applied or not p["enabled"] else "  (group off)"))
+            if a.code:
+                print("\n".join("      " + line for line in p["policyText"].splitlines()))
+
+
+def cmd_show(a) -> None:
+    st = state()
+    if "/" in a.ref:
+        g, p = find_policy(st, a.ref)
+        print(f"# {g['name']}/{p['name']}  [{onoff(p['enabled']).strip()}; group {onoff(g['enabled']).strip()}]")
+        if p.get("description"):
+            print(f"# {p['description']}")
+        v = p.get("validation") or {}
+        if not v.get("valid", True):
+            print(f"# INVALID: {v.get('error')}")
+        print(p["policyText"])
+    else:
+        g = find_group(st, a.ref)
+        print(f"# group {g['name']}  [{onoff(g['enabled']).strip()}]" + (f"  source {g['source']}" if g.get("source") else ""))
+        for p in g["policies"]:
+            print(f"\n// {g['name']}/{p['name']}  [{onoff(p['enabled']).strip()}]" + (f" — {p['description']}" if p.get("description") else ""))
+            print(p["policyText"])
+
+
+def cmd_validate(a) -> None:
+    res = call("POST", "/validate", {"name": a.name, "policyText": read_text(a.file)})
+    if res.get("valid"):
+        pol = res["policy"]
+        print(f"valid: {pol['effect']}" + (", approval" if pol.get("approval") else "") + (f", rate {pol['rate_limit']}" if pol.get("rate_limit") else ""))
+    else:
+        print(f"invalid: {res.get('error')}")
+        sys.exit(1)
+
+
+def cmd_add(a) -> None:
+    st = state()
+    gname, pname = split_ref(a.ref)
+    g = find_group(st, gname)
+    call("POST", "/policies", {"groupId": g["id"], "name": pname, "description": a.description,
+                               "policyText": read_text(a.file), "enabled": not a.off})
+    print(f"added {g['name']}/{pname}" + (" (off)" if a.off else ""))
+
+
+def cmd_edit(a) -> None:
+    st = state()
+    g, p = find_policy(st, a.ref)
+    body = {}
+    if a.file:
+        body["policyText"] = read_text(a.file)
+    if a.name:
+        body["name"] = a.name
+    if a.description is not None:
+        body["description"] = a.description or None
+    if not body:
+        die("nothing to change (use --file, --name, or --description)")
+    call("PATCH", f"/policies/{p['id']}", body)
+    print(f"updated {g['name']}/{a.name or p['name']}")
+
+
+def cmd_mv(a) -> None:
+    st = state()
+    g, p = find_policy(st, a.ref)
+    target = find_group(st, a.group)
+    call("PATCH", f"/policies/{p['id']}", {"groupId": target["id"]})
+    print(f"moved {g['name']}/{p['name']} → {target['name']}/{p['name']}")
+
+
+def cmd_toggle(a) -> None:
+    st = state()
+    g, p = find_policy(st, a.ref)
+    call("PATCH", f"/policies/{p['id']}", {"enabled": a.cmd == "on"})
+    note = "" if g["enabled"] or a.cmd == "off" else f" (group {g['name']} is off, so it does not apply yet)"
+    print(f"{g['name']}/{p['name']} {a.cmd}{note}")
+
+
+def cmd_rm(a) -> None:
+    st = state()
+    g, p = find_policy(st, a.ref)
+    call("DELETE", f"/policies/{p['id']}")
+    print(f"deleted {g['name']}/{p['name']}")
+
+
+def cmd_group(a) -> None:
+    if a.gcmd == "add":
+        call("POST", "/groups", {"name": a.name, "description": a.description, "source": a.source, "enabled": not a.off})
+        print(f"added group {a.name}" + (" (off)" if a.off else ""))
+        return
+    st = state()
+    g = find_group(st, a.name)
+    if a.gcmd in ("on", "off"):
+        call("PATCH", f"/groups/{g['id']}", {"enabled": a.gcmd == "on"})
+        print(f"group {g['name']} {a.gcmd} ({len(g['policies'])} policies)")
+    elif a.gcmd == "edit":
+        body = {k: v for k, v in (("name", a.rename), ("description", a.description), ("source", a.source)) if v is not None}
+        if not body:
+            die("nothing to change (use --rename, --description, or --source; \"\" clears)")
+        body = {k: (v or None) if k != "name" else v for k, v in body.items()}
+        call("PATCH", f"/groups/{g['id']}", body)
+        print(f"updated group {a.rename or g['name']}")
+    elif a.gcmd == "rm":
+        if g["policies"] and not a.yes:
+            die(f"group {g['name']} has {len(g['policies'])} policies; pass --yes to delete them too")
+        call("DELETE", f"/groups/{g['id']}")
+        print(f"deleted group {g['name']}")
+
+
+def cmd_sync(a) -> None:
+    try:
+        spec = json.loads(read_text(a.file))
+    except ValueError as e:
+        die(f"{a.file} is not JSON: {e}")
+    res = call("PUT", "/groups/sync", spec)
+    print(f"synced group {res['name']}: {len(res['policies'])} policies, group {'on' if res['enabled'] else 'off'}")
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(prog="onecli-policy", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    s = sub.add_parser("list", help="groups and policies")
+    s.add_argument("--code", action="store_true", help="also print each policy's Cedar code")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(fn=cmd_list)
+
+    s = sub.add_parser("show", help="Cedar code of a group or one <group>/<policy>")
+    s.add_argument("ref")
+    s.set_defaults(fn=cmd_show)
+
+    s = sub.add_parser("validate", help="check a Cedar statement without saving")
+    s.add_argument("file", help="file with one Cedar statement, or - for stdin")
+    s.add_argument("--name", default="policy")
+    s.set_defaults(fn=cmd_validate)
+
+    s = sub.add_parser("add", help="add <group>/<policy> from a file")
+    s.add_argument("ref")
+    s.add_argument("file", help="file with one Cedar statement, or - for stdin")
+    s.add_argument("--description")
+    s.add_argument("--off", action="store_true", help="create switched off")
+    s.set_defaults(fn=cmd_add)
+
+    s = sub.add_parser("edit", help="change a policy's code, name, or description")
+    s.add_argument("ref")
+    s.add_argument("--file", help="new Cedar code (file, or - for stdin)")
+    s.add_argument("--name", help="new policy name")
+    s.add_argument("--description", help='new description ("" clears)')
+    s.set_defaults(fn=cmd_edit)
+
+    s = sub.add_parser("mv", help="move <group>/<policy> into another group")
+    s.add_argument("ref")
+    s.add_argument("group")
+    s.set_defaults(fn=cmd_mv)
+
+    for name in ("on", "off"):
+        s = sub.add_parser(name, help=f"switch <group>/<policy> {name}")
+        s.add_argument("ref")
+        s.set_defaults(fn=cmd_toggle)
+
+    s = sub.add_parser("rm", help="delete <group>/<policy>")
+    s.add_argument("ref")
+    s.set_defaults(fn=cmd_rm)
+
+    s = sub.add_parser("sync", help="create or replace a whole group from a JSON spec")
+    s.add_argument("file", help="JSON file, or - for stdin")
+    s.set_defaults(fn=cmd_sync)
+
+    g = sub.add_parser("group", help="add, switch, edit, or delete groups")
+    gs = g.add_subparsers(dest="gcmd", required=True)
+    x = gs.add_parser("add")
+    x.add_argument("name")
+    x.add_argument("--description")
+    x.add_argument("--source", help='machine key, e.g. "skill:agent-browser"')
+    x.add_argument("--off", action="store_true")
+    for name in ("on", "off"):
+        gs.add_parser(name).add_argument("name")
+    x = gs.add_parser("edit")
+    x.add_argument("name")
+    x.add_argument("--rename")
+    x.add_argument("--description")
+    x.add_argument("--source")
+    x = gs.add_parser("rm")
+    x.add_argument("name")
+    x.add_argument("--yes", action="store_true", help="also delete the group's policies")
+    g.set_defaults(fn=cmd_group)
+
+    a = ap.parse_args()
+    a.fn(a)
+
+
+if __name__ == "__main__":
+    main()

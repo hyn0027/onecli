@@ -7,19 +7,36 @@ used only for credential injection: which secrets and app connections an agent
 is granted (Agents → agent → Secrets / Apps). A grant never allows a request by
 itself; a Cedar policy must still permit it.
 
-Manage policies in the dashboard under **Workspace Settings → Policy**. Each
-policy is one Cedar statement with a unique name, an optional description, and
-an on/off switch; the page shows each policy's code, lets you add, edit,
-switch, and delete policies, and also shows the default posture and the
+Manage policies in the dashboard under **Workspace Settings → Policy**, or
+with `scripts/onecli-policy` (below). Each policy is one Cedar statement with a
+name, an optional description, and an on/off switch, and belongs to a **group**
+that has its own on/off switch. A policy applies only when it and its group are
+both on. The page shows each group and each policy's code, lets you add, edit,
+switch, move, and delete both, and also shows the default posture and the
 credential grants.
+
+## Groups
+
+- A group has a name (unique per workspace), an optional description, an
+  on/off switch, and an optional `source` key (unique per workspace), meant for
+  tooling that manages the group, such as `skill:agent-browser` or
+  `mcp:github`.
+- Policy names are unique within their group. The gateway names a policy
+  `group/policy` (its Cedar id), which is what logs and 403 responses show.
+- Deleting a group deletes its policies; switch it off to keep them.
+- `PUT /v1/cedar-policy/groups/sync` creates or replaces a whole group in one
+  transaction: the group is found by `source` when given, else by name, and its
+  policies become exactly the ones sent. Every policy is validated before
+  anything is written. This is the hook for opening a group of access when an
+  agent loads a skill or MCP server and closing it again later.
 
 ## Decision
 
 Cedar is deny-by-default. A request passes when at least one enabled `permit`
 policy matches and no enabled `forbid` policy does.
 
-- No enabled policy in the workspace: every request is denied, including the
-  model API, so agents cannot run.
+- No policy switched on (in a group that is on): every request is denied,
+  including the model API, so agents cannot run.
 - An enabled policy that fails to parse: every request is denied. Saving one is
   refused, so this only happens if the table is edited directly.
 - A `forbid` policy that errors while evaluating (for example it reads
@@ -52,12 +69,13 @@ On `permit` policies:
   `@approval` wins.
 - `@rate_limit("60/minute")` — `hour` and `day` also work; counts per agent.
 
-The policy's name (set in the dashboard) is its Cedar id and appears in logs
-and 403 responses.
+The policy's `group/policy` name is its Cedar id and appears in logs and 403
+responses.
 
 ## Examples
 
-Each block below is one policy (one dashboard entry).
+Each block below is one policy (one dashboard entry); the comment gives its
+name.
 
 ```cedar
 // allow-anthropic-api — the model API; agents cannot run without it.
@@ -88,15 +106,50 @@ when { context.has_body && !(context.body like "*@example.org*") };
 
 `like` supports `*` wildcards only; Cedar has no regular expressions.
 
+## Command line
+
+`scripts/onecli-policy` calls the API with an API key (Python 3 standard
+library only):
+
+```bash
+export ONECLI_API_KEY=...            # dashboard → API keys
+scripts/onecli-policy list --code    # groups, policies, on/off, code
+scripts/onecli-policy group add web-research --description "Research sites"
+scripts/onecli-policy add web-research/arxiv arxiv.cedar
+scripts/onecli-policy off web-research/arxiv
+scripts/onecli-policy group off web-research
+scripts/onecli-policy mv default/read-wikipedia web-research
+scripts/onecli-policy sync group.json   # create or replace a whole group
+```
+
+A sync file:
+
+```json
+{
+  "name": "skill-agent-browser",
+  "source": "skill:agent-browser",
+  "description": "Opened when the agent-browser skill loads",
+  "policies": [
+    {
+      "name": "docs-site",
+      "policyText": "permit(principal, action in [OneCLI::Action::\"GET\", OneCLI::Action::\"HEAD\"], resource == OneCLI::Host::\"docs.example.com\");"
+    }
+  ]
+}
+```
+
 ## Code
 
 - Gateway: `apps/gateway/crates/policy-engine/src/cedar.rs` (decision, request
   model, loader), hooked into `policy_engine::evaluate` / `would_allow` (always
   on); `server` serves `/v1/cedar/validate` (checks one statement) and
   `/v1/cedar/status`.
-- Storage: `cedar_policy_rules` (Prisma model `CedarPolicyRule`; name unique per
-  workspace), migration `20261016000000_cedar_policy_rules`, which replaced the
-  earlier single-document `cedar_policies` table.
+- Storage: `cedar_policy_groups` and `cedar_policy_rules` (Prisma models
+  `CedarPolicyGroup`, `CedarPolicyRule`), migrations
+  `20261016000000_cedar_policy_rules` (replaced the earlier single-document
+  `cedar_policies` table) and `20261017000000_cedar_policy_groups` (moved
+  existing policies into a `default` group).
 - API: `packages/api/src/routes/cedar-policy.ts` (`/v1/cedar-policy`,
-  `/v1/cedar-policy/policies[/:id]`, `/v1/cedar-policy/validate`).
+  `/groups[/:id]`, `/groups/sync`, `/policies[/:id]`, `/validate`).
+- CLI: `scripts/onecli-policy`.
 - Dashboard: `apps/web/src/app/(dashboard)/w/[workspaceId]/settings/policy/`.

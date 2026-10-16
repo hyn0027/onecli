@@ -1,7 +1,7 @@
 import { apiDelete, apiGet, apiPatch, apiPost } from "./client";
 
-// Local addition: the workspace's Cedar policies (one statement each) and the gateway's
-// enforcement posture (Workspace Settings → Policy). Workspace comes from the
+// Local addition: the workspace's Cedar policies (one statement each, in groups)
+// and the gateway's enforcement posture (Workspace Settings → Policy). Workspace comes from the
 // URL scope header that apiFetch adds.
 const base = "/v1/cedar-policy";
 
@@ -18,6 +18,7 @@ export type CedarValidation =
 /** One Cedar policy statement with its on/off switch. */
 export interface CedarPolicyRule {
   id: string;
+  groupId: string;
   name: string;
   description: string | null;
   policyText: string;
@@ -25,6 +26,19 @@ export interface CedarPolicyRule {
   position: number;
   updatedAt: string;
   validation?: CedarValidation;
+}
+
+/** A named group of policies with its own on/off switch. */
+export interface CedarPolicyGroup {
+  id: string;
+  name: string;
+  description: string | null;
+  enabled: boolean;
+  position: number;
+  /** Machine key of the tooling that manages the group, e.g. "skill:agent-browser". */
+  source: string | null;
+  updatedAt: string;
+  policies: CedarPolicyRule[];
 }
 
 export interface PublishedRule {
@@ -68,7 +82,7 @@ export interface AgentRef {
 }
 
 export interface CedarPolicyState {
-  policies: CedarPolicyRule[];
+  groups: CedarPolicyGroup[];
   gateway: { engine: "cedar" | "rules"; strictDeny: boolean } | null;
   rules: { generation: number | null; rules: PublishedRule[] };
   secrets: SecretConfig[];
@@ -81,6 +95,7 @@ export const validate = (name: string, policyText: string) =>
   apiPost<CedarValidation>(`${base}/validate`, { name, policyText });
 
 export interface PolicyInput {
+  groupId: string;
   name: string;
   description?: string | null;
   policyText: string;
@@ -94,3 +109,18 @@ export const update = (id: string, input: Partial<PolicyInput>) =>
   apiPatch<CedarPolicyRule>(`${base}/policies/${id}`, input);
 
 export const remove = (id: string) => apiDelete(`${base}/policies/${id}`);
+
+export interface GroupInput {
+  name: string;
+  description?: string | null;
+  enabled?: boolean;
+  source?: string | null;
+}
+
+export const createGroup = (input: GroupInput) =>
+  apiPost<CedarPolicyGroup>(`${base}/groups`, input);
+
+export const updateGroup = (id: string, input: Partial<GroupInput>) =>
+  apiPatch<CedarPolicyGroup>(`${base}/groups/${id}`, input);
+
+export const removeGroup = (id: string) => apiDelete(`${base}/groups/${id}`);

@@ -12,7 +12,7 @@ import {
 import { Skeleton } from "@onecli/ui/components/skeleton";
 import { cedarPolicy } from "@/lib/api";
 import type { CedarPolicyState, PublishedRule } from "@/lib/api/cedar-policy";
-import { CedarPolicies, POLICY_QUERY_KEY } from "./cedar-policies";
+import { activeCount, CedarPolicies, POLICY_QUERY_KEY } from "./cedar-policies";
 import { GrantDetails } from "./grant-details";
 
 /** The default posture in words. Cedar decides every request in this build;
@@ -29,9 +29,10 @@ const posture = (state: CedarPolicyState) => {
       detail: "The Cedar policies below are not enforced by this gateway.",
     };
   }
-  const on = state.policies.filter((p) => p.enabled).length;
+  const total = state.groups.reduce((n, g) => n + g.policies.length, 0);
+  const groupsOn = state.groups.filter((g) => g.enabled).length;
   return {
-    engine: `Cedar policies (${on} of ${state.policies.length} on)`,
+    engine: `Cedar policies (${activeCount(state.groups)} of ${total} applied; ${groupsOn} of ${state.groups.length} groups on)`,
     defaultLine: "Block",
     detail:
       "A request passes only if an enabled permit policy matches and no enabled forbid policy does — credentialed or not, LLM hosts included.",
@@ -90,12 +91,13 @@ export const PolicyContent = () => {
         <CardHeader>
           <CardTitle>Cedar policies</CardTitle>
           <CardDescription>
-            One Cedar statement per policy. Switch policies on or off, edit them, or add new ones;
-            changes apply within seconds.
+            One Cedar statement per policy, organized in groups. Switch groups or single policies
+            on or off, edit them, or add new ones; a policy applies only when it and its group are
+            both on. Changes apply within seconds.
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <CedarPolicies policies={data.policies} />
+          <CedarPolicies groups={data.groups} />
         </CardContent>
       </Card>
 

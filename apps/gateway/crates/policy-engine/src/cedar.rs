@@ -184,14 +184,17 @@ pub async fn policies_for(workspace_id: &str) -> Arc<LoadedPolicies> {
     loaded
 }
 
-/// (name, policy text) of the workspace's enabled policies.
+/// ("group/policy" name, policy text) of the workspace's policies that are
+/// switched on in a group that is switched on.
 async fn load(workspace_id: &str) -> anyhow::Result<Vec<(String, String)>> {
     let pool = POOL
         .get()
         .ok_or_else(|| anyhow::anyhow!("cedar loader not initialised"))?;
     let rows = sqlx::query_as::<_, (String, String)>(
-        "SELECT name, policy_text FROM cedar_policy_rules \
-         WHERE workspace_id = $1 AND enabled ORDER BY position, created_at",
+        "SELECT g.name || '/' || r.name, r.policy_text \
+         FROM cedar_policy_rules r JOIN cedar_policy_groups g ON g.id = r.group_id \
+         WHERE r.workspace_id = $1 AND r.enabled AND g.enabled \
+         ORDER BY g.position, g.created_at, r.position, r.created_at",
     )
     .bind(workspace_id)
     .fetch_all(pool)
@@ -375,7 +378,7 @@ fn matched(id: &PolicyId, name: &str) -> MatchedRule {
     }
 }
 
-/// The policy's name (its id is the row name).
+/// The policy's name: its Cedar id, "group/policy" as loaded from the database.
 pub fn display_name(policy: &Policy) -> String {
     policy.id().to_string()
 }
