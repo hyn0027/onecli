@@ -664,6 +664,9 @@ pub async fn forward_request(
 
     // ── Consume request (both ManualApproval and Allow) ────────────
     let (parts, body) = req.into_parts();
+    // Local addition: record this request and its response (off unless
+    // GATEWAY_CAPTURE_DIR is set). The agent's own headers, before injection.
+    let capture = super::capture::start(proxy_ctx, method.as_str(), host, &path, &url, &parts.headers);
 
     let mut headers = hyper::HeaderMap::new();
     for (name, value) in parts.headers.iter() {
@@ -1066,6 +1069,9 @@ pub async fn forward_request(
         } else {
             (body, None, None, None)
         };
+
+    // The body as the agent sent it, before any provider transform.
+    let forward_body = super::capture::tee_request(&capture, forward_body);
 
     // ── Provider-specific body transformation ────────────────────
     let forward_body = match rules.body_transform {
@@ -1514,6 +1520,9 @@ pub async fn forward_request(
         }
 
         // Not auth-related: forward the buffered 400 as-is.
+        if let Some(c) = &capture {
+            c.response_whole(status.as_u16(), &resp_headers, &body_bytes);
+        }
         let mut response = Response::new(Either::Left(Full::new(body_bytes)));
         *response.status_mut() = status;
         for (name, value) in resp_headers.iter() {
@@ -1595,6 +1604,9 @@ pub async fn forward_request(
     } else {
         upstream_stream
     };
+
+    let upstream_stream =
+        super::capture::tee_response(&capture, status.as_u16(), &resp_headers, upstream_stream);
 
     info!(
         method = %method,

@@ -62,6 +62,30 @@ const useRefresh = () => {
   return () => void queryClient.invalidateQueries({ queryKey: POLICY_QUERY_KEY });
 };
 
+/**
+ * A policy or group description on its own lines: wrapped at a readable width
+ * (not one long truncated line), the author's line breaks kept, and a trailing
+ * note in parentheses — "(read-only; toolset actions)" — set apart in lighter
+ * text, one item per "; ".
+ */
+const Description = ({ text, className = "" }: { text: string; className?: string }) => {
+  const m = text.trim().match(/^([\s\S]*?)\s*\(([^()]*)\)$/);
+  const main = m?.[1] ? m[1] : text.trim();
+  const notes = m?.[1] && m[2] ? m[2].split(";").map((n) => n.trim()).filter(Boolean) : [];
+  return (
+    <div className={`text-muted-foreground max-w-prose text-sm leading-snug ${className}`}>
+      <p className="break-words whitespace-pre-line">{main}</p>
+      {notes.length > 0 && (
+        <p className="mt-0.5 flex flex-wrap gap-x-3 text-xs opacity-80">
+          {notes.map((n) => (
+            <span key={n}>{n}</span>
+          ))}
+        </p>
+      )}
+    </div>
+  );
+};
+
 const Modifiers = ({ summary }: { summary: CedarPolicySummary }) => (
   <>
     <Badge variant={summary.effect === "forbid" ? "destructive" : "secondary"}>
@@ -148,7 +172,7 @@ const PolicyForm = ({
 
   return (
     <div className="flex flex-col gap-3 rounded-md border p-4">
-      <div className={`grid gap-3 ${initial ? "sm:grid-cols-3" : "sm:grid-cols-2"}`}>
+      <div className={`grid gap-3 ${initial ? "sm:grid-cols-2" : ""}`}>
         <div className="grid gap-1.5">
           <Label htmlFor="policy-name">Name</Label>
           <Input
@@ -156,14 +180,6 @@ const PolicyForm = ({
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="read-wikipedia"
-          />
-        </div>
-        <div className="grid gap-1.5">
-          <Label htmlFor="policy-description">Description (optional)</Label>
-          <Input
-            id="policy-description"
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
           />
         </div>
         {initial && (
@@ -183,6 +199,16 @@ const PolicyForm = ({
             </Select>
           </div>
         )}
+      </div>
+      <div className="grid gap-1.5">
+        <Label htmlFor="policy-description">Description (optional)</Label>
+        <Textarea
+          id="policy-description"
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          rows={2}
+          className="text-sm"
+        />
       </div>
       <Textarea
         value={text}
@@ -285,11 +311,6 @@ const PolicyRow = ({
         {policy.validation?.valid && <Modifiers summary={policy.validation.policy} />}
         {invalid && <Badge variant="destructive">invalid</Badge>}
         {policy.enabled && !group.enabled && <Badge variant="outline">group off</Badge>}
-        {policy.description && (
-          <span className="text-muted-foreground min-w-0 flex-1 truncate text-sm" title={policy.description}>
-            {policy.description}
-          </span>
-        )}
         <div className="ml-auto flex gap-1">
           <Button variant="ghost" size="sm" onClick={() => setShowCode((v) => !v)}>
             {showCode ? "Hide code" : "Code"}
@@ -304,6 +325,7 @@ const PolicyRow = ({
           />
         </div>
       </div>
+      {policy.description && <Description text={policy.description} className="mt-1 pl-10" />}
       {showCode && (
         <pre className="bg-muted mt-2 overflow-x-auto rounded-md p-3 font-mono text-xs leading-relaxed">
           {policy.policyText}
@@ -352,7 +374,7 @@ const GroupForm = ({
 
   return (
     <div className="flex flex-col gap-3 rounded-md border p-4">
-      <div className="grid gap-3 sm:grid-cols-3">
+      <div className="grid gap-3 sm:grid-cols-2">
         <div className="grid gap-1.5">
           <Label htmlFor="group-name">Group name</Label>
           <Input
@@ -360,14 +382,6 @@ const GroupForm = ({
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="web-research"
-          />
-        </div>
-        <div className="grid gap-1.5">
-          <Label htmlFor="group-description">Description (optional)</Label>
-          <Input
-            id="group-description"
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
           />
         </div>
         <div className="grid gap-1.5">
@@ -379,6 +393,16 @@ const GroupForm = ({
             placeholder="skill:agent-browser"
           />
         </div>
+      </div>
+      <div className="grid gap-1.5">
+        <Label htmlFor="group-description">Description (optional)</Label>
+        <Textarea
+          id="group-description"
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          rows={2}
+          className="text-sm"
+        />
       </div>
       <div className="flex justify-end gap-2">
         <Button variant="ghost" onClick={onDone} disabled={save.isPending}>
@@ -439,17 +463,17 @@ const GroupList = ({
         <GroupSwitch group={g} />
         <span className="font-medium">{g.name}</span>
         {g.source && <Badge variant="outline">{g.source}</Badge>}
-        {g.description && (
-          <span className="text-muted-foreground min-w-0 flex-1 truncate text-sm" title={g.description}>
-            {g.description}
-          </span>
-        )}
         <span className="text-muted-foreground ml-auto shrink-0 text-sm tabular-nums">
           {g.enabled ? `${countOn(g)} of ${g.policies.length} on` : `off · ${g.policies.length} policies`}
         </span>
         <span className="text-muted-foreground" aria-hidden>
           ›
         </span>
+        {g.description && (
+          <div className="basis-full pl-11">
+            <Description text={g.description} />
+          </div>
+        )}
       </div>
     ))}
     {groups.length === 0 && <p className="text-muted-foreground p-4 text-sm">No groups yet.</p>}
@@ -525,7 +549,11 @@ const GroupDetail = ({
                 onConfirm={() => remove.mutate()}
               />
             </div>
-            {group.description && <p className="text-muted-foreground w-full text-sm">{group.description}</p>}
+            {group.description && (
+              <div className="basis-full pl-10">
+                <Description text={group.description} />
+              </div>
+            )}
           </div>
         )}
 

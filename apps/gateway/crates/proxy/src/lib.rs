@@ -15,6 +15,7 @@
 //!   operator allowlist entry
 pub mod approval_enrich;
 pub mod body;
+pub mod capture;
 #[cfg(test)]
 mod byoc_groups_pg_test;
 pub mod connect;

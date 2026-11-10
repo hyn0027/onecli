@@ -66,11 +66,29 @@ which secrets and app connections are injected for which agents. Full reference:
 - `apps/web/src/lib/nav-config.ts` (+ test): "Policy" in the workspace settings menu.
 - `scripts/onecli-policy` (new, Python standard library only): command-line client for the same API (`list`, `show`, `add`, `edit`, `mv`, `on`, `off`, `rm`, `validate`, `sync`, and `group add|on|off|edit|rm`), addressing policies as `group/policy`; needs `ONECLI_API_KEY`.
 
+### Traffic capture (`GATEWAY_CAPTURE_DIR`)
+
+For NanoClaw's per-session runtime ontology (nanoclaw `docs/ontology-runtime.md`).
+
+- `apps/gateway/crates/proxy/src/capture.rs` (new) and three hooks in `forward.rs`
+  (`forward_request`): off unless `GATEWAY_CAPTURE_DIR` is set. Each forwarded request
+  whose host is not in `GATEWAY_CAPTURE_EXCLUDE` (default `api.anthropic.com,*.datadoghq.com`)
+  becomes one JSON line in `<dir>/<YYYYMMDDHH>.jsonl` (UTC hour, mode 0600), written by a
+  background thread once the response has been relayed. Bodies are copied as they stream
+  (never delaying the request), capped by `GATEWAY_CAPTURE_MAX_BODY` (default 1 MiB).
+- Recorded: the agent's own request headers before injection, minus `authorization`,
+  `proxy-authorization`, `x-api-key`, `cookie`; the request body before any provider
+  transform; the response status, headers (minus `set-cookie`) and gzip-decoded body.
+  Bodies go through `summary::mask_secrets`; `api.vercel.com` `/env` bodies are withheld.
+  Requests denied by policy are not recorded.
+- Ids are `<unix ms>-<seq>`, sortable, so a consumer keeps its place by the last id.
+
 ## Deployment (`~/.onecli`)
 
 | File | What changed |
 |---|---|
 | `docker-compose.yml` | Replaced with a 2.14 stack built from this checkout (also kept as `docker-compose.v2.yml`): `migrations`, `api`, `web`, `gateway` only, images `ghcr.io/onecli/onecli-*:2.14.0-local` with `pull_policy: never`. The gateway sets `GATEWAY_STRICT_DENY: "true"`, runs as uid `1000:1000` (owner of the existing CA files), and joins NanoClaw's `nanoclaw-egress` network with the alias `host.docker.internal`, so recreating it never drops that link. |
+| `docker-compose.yml` (capture) | The gateway also sets `GATEWAY_CAPTURE_DIR: /capture`, `GATEWAY_CAPTURE_EXCLUDE`, and mounts NanoClaw's `data/onecli-capture` at `/capture`. Backup before that change: `docker-compose.yml.bak-before-capture`. |
 | `docker-compose.yml.bak-local-1.41.0`, `.bak-ghcr-1.41.0` | Previous single-container setups. |
 | `.env` (mode 600, never commit) | `SECRET_ENCRYPTION_KEY` (carried over from 1.41's `/app/data/secret-encryption-key`, so stored secrets stay readable), `GATEWAY_INTERNAL_SECRET`, `BETTER_AUTH_SECRET`, `ONECLI_VERSION=2.14.0-local`, `POSTGRES_PORT=15432` (a host Postgres holds 5432), `ONECLI_EXTERNAL_URL=http://127.0.0.1:10254` (makes sign-in cookies work at that address). |
 | `config.json` | CLI `api-host` → `http://127.0.0.1:10256` (backup `config.json.bak-1.41`). |
