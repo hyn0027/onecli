@@ -666,7 +666,14 @@ pub async fn forward_request(
     let (parts, body) = req.into_parts();
     // Local addition: record this request and its response (off unless
     // GATEWAY_CAPTURE_DIR is set). The agent's own headers, before injection.
-    let capture = super::capture::start(proxy_ctx, method.as_str(), host, &path, &url, &parts.headers);
+    let capture = super::capture::start(
+        proxy_ctx,
+        method.as_str(),
+        host,
+        &path,
+        &url,
+        &parts.headers,
+    );
 
     let mut headers = hyper::HeaderMap::new();
     for (name, value) in parts.headers.iter() {
@@ -1819,6 +1826,23 @@ fn body_indicates_auth_error(body: &[u8]) -> bool {
 /// masked `url` named instead.
 fn send_failure(e: reqwest::Error, url: &str) -> anyhow::Error {
     anyhow::Error::new(e.without_url()).context(format!("forwarding to {url}"))
+}
+
+/// Request headers for Cedar policies, as (lower-case name, value) pairs;
+/// empty unless Cedar mode is on. Non-UTF-8 values are skipped.
+pub(crate) fn cedar_headers(headers: &hyper::HeaderMap) -> Vec<(String, String)> {
+    if !policy_engine::cedar::enabled() {
+        return Vec::new();
+    }
+    headers
+        .iter()
+        .filter_map(|(name, value)| {
+            value
+                .to_str()
+                .ok()
+                .map(|v| (name.as_str().to_ascii_lowercase(), v.to_string()))
+        })
+        .collect()
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────
@@ -3108,21 +3132,4 @@ mod tests {
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
         assert_eq!(response.text().await.expect("body"), body);
     }
-}
-
-/// Request headers for Cedar policies, as (lower-case name, value) pairs;
-/// empty unless Cedar mode is on. Non-UTF-8 values are skipped.
-pub(crate) fn cedar_headers(headers: &hyper::HeaderMap) -> Vec<(String, String)> {
-    if !policy_engine::cedar::enabled() {
-        return Vec::new();
-    }
-    headers
-        .iter()
-        .filter_map(|(name, value)| {
-            value
-                .to_str()
-                .ok()
-                .map(|v| (name.as_str().to_ascii_lowercase(), v.to_string()))
-        })
-        .collect()
 }

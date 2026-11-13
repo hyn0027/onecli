@@ -136,7 +136,11 @@ pub struct PolicySummary {
 pub fn summarize(name: &str, text: &str) -> Result<PolicySummary, String> {
     let p = parse_policy(name, text)?;
     Ok(PolicySummary {
-        effect: if p.effect() == Effect::Permit { "permit" } else { "forbid" },
+        effect: if p.effect() == Effect::Permit {
+            "permit"
+        } else {
+            "forbid"
+        },
         approval: p.annotation("approval").is_some(),
         rate_limit: p.annotation("rate_limit").map(str::to_string),
     })
@@ -180,7 +184,10 @@ pub async fn policies_for(workspace_id: &str) -> Arc<LoadedPolicies> {
     if let Err(e) = &loaded.set {
         warn!(workspace = workspace_id, error = %e, "cedar: policies unusable, denying all requests");
     }
-    cache().insert(workspace_id.to_string(), (Instant::now(), Arc::clone(&loaded)));
+    cache().insert(
+        workspace_id.to_string(),
+        (Instant::now(), Arc::clone(&loaded)),
+    );
     loaded
 }
 
@@ -227,10 +234,19 @@ pub struct CedarRequest<'a> {
 
 /// What the policies say about one request, before rate limiting.
 enum Judgement {
-    Blocked { name: String, rule: Option<MatchedRule> },
+    Blocked {
+        name: String,
+        rule: Option<MatchedRule>,
+    },
     DefaultDeny,
-    Approval { rule_id: String, rule: MatchedRule },
-    Allow { rule: Option<MatchedRule>, rate: Option<(String, String, u64, u64)> },
+    Approval {
+        rule_id: String,
+        rule: MatchedRule,
+    },
+    Allow {
+        rule: Option<MatchedRule>,
+        rate: Option<(String, String, u64, u64)>,
+    },
 }
 
 fn judge(
@@ -243,17 +259,28 @@ fn judge(
         proxy_ctx.agent_id.as_deref(),
     ) else {
         // Unlike the rule engine, an unidentified request is not waved through.
-        return Judgement::Blocked { name: "Cedar: request has no agent identity".into(), rule: None };
+        return Judgement::Blocked {
+            name: "Cedar: request has no agent identity".into(),
+            rule: None,
+        };
     };
     let policies = match &loaded.set {
         Ok(set) => set,
-        Err(_) => return Judgement::Blocked { name: "Cedar policy document unusable".into(), rule: None },
+        Err(_) => {
+            return Judgement::Blocked {
+                name: "Cedar policy document unusable".into(),
+                rule: None,
+            }
+        }
     };
     let (cedar_request, entities) = match build(proxy_ctx, agent_id, workspace_id, request) {
         Ok(built) => built,
         Err(e) => {
             warn!(error = %e, "cedar: could not build request, denying");
-            return Judgement::Blocked { name: "Cedar: malformed request".into(), rule: None };
+            return Judgement::Blocked {
+                name: "Cedar: malformed request".into(),
+                rule: None,
+            };
         }
     };
     let response = Authorizer::new().is_authorized(&cedar_request, policies, &entities);
@@ -266,7 +293,10 @@ fn judge(
             if policy.effect() == Effect::Forbid {
                 let name = display_name(policy);
                 warn!(policy = %name, error = %error, "cedar: forbid policy errored, treating as matched");
-                return Judgement::Blocked { rule: Some(matched(id, &name)), name };
+                return Judgement::Blocked {
+                    rule: Some(matched(id, &name)),
+                    name,
+                };
             }
         }
         debug!(error = %error, "cedar: policy evaluation error (permit not applied)");
@@ -282,7 +312,10 @@ fn judge(
         return match satisfied.iter().find(|(_, p)| p.effect() == Effect::Forbid) {
             Some((id, p)) => {
                 let name = display_name(p);
-                Judgement::Blocked { rule: Some(matched(id, &name)), name }
+                Judgement::Blocked {
+                    rule: Some(matched(id, &name)),
+                    name,
+                }
             }
             None => Judgement::DefaultDeny,
         };
@@ -308,13 +341,19 @@ fn judge(
     };
     let name = display_name(policy);
     if policy.annotation("approval").is_some() {
-        return Judgement::Approval { rule_id: format!("cedar:{id}"), rule: matched(id, &name) };
+        return Judgement::Approval {
+            rule_id: format!("cedar:{id}"),
+            rule: matched(id, &name),
+        };
     }
     let rate = policy
         .annotation("rate_limit")
         .and_then(parse_rate_limit)
         .map(|(limit, secs)| (format!("cedar:{id}"), name.clone(), limit, secs));
-    Judgement::Allow { rule: Some(matched(id, &name)), rate }
+    Judgement::Allow {
+        rule: Some(matched(id, &name)),
+        rate,
+    }
 }
 
 /// Decide a request with the workspace's current policies.
@@ -330,9 +369,14 @@ pub async fn decide(
     match judge(proxy_ctx, &loaded, request) {
         Judgement::Blocked { name, rule } => (blocked(&name), rule),
         Judgement::DefaultDeny => (PolicyDecision::BlockedByDefaultPolicy, None),
-        Judgement::Approval { rule_id, rule } => (PolicyDecision::ManualApproval { rule_id }, Some(rule)),
+        Judgement::Approval { rule_id, rule } => {
+            (PolicyDecision::ManualApproval { rule_id }, Some(rule))
+        }
         Judgement::Allow { rule, rate: None } => (PolicyDecision::Allow, rule),
-        Judgement::Allow { rule, rate: Some((rule_id, name, limit, window_secs)) } => {
+        Judgement::Allow {
+            rule,
+            rate: Some((rule_id, name, limit, window_secs)),
+        } => {
             let org_id = proxy_ctx.organization_id.as_deref().unwrap_or("");
             match check_rate_limit(
                 org_id,
@@ -371,11 +415,27 @@ pub struct Evaluation {
 }
 
 /// Evaluate a request with given policies (the core of `evaluate`).
-pub fn evaluate_with(proxy_ctx: &ProxyContext, loaded: &LoadedPolicies, request: &CedarRequest<'_>) -> Evaluation {
+pub fn evaluate_with(
+    proxy_ctx: &ProxyContext,
+    loaded: &LoadedPolicies,
+    request: &CedarRequest<'_>,
+) -> Evaluation {
     match judge(proxy_ctx, loaded, request) {
-        Judgement::Allow { rule, .. } => Evaluation { decision: "allow", policy: rule.map(|r| r.name), reason: None },
-        Judgement::Approval { rule, .. } => Evaluation { decision: "approval", policy: Some(rule.name), reason: None },
-        Judgement::DefaultDeny => Evaluation { decision: "deny", policy: None, reason: Some("no permit matched".into()) },
+        Judgement::Allow { rule, .. } => Evaluation {
+            decision: "allow",
+            policy: rule.map(|r| r.name),
+            reason: None,
+        },
+        Judgement::Approval { rule, .. } => Evaluation {
+            decision: "approval",
+            policy: Some(rule.name),
+            reason: None,
+        },
+        Judgement::DefaultDeny => Evaluation {
+            decision: "deny",
+            policy: None,
+            reason: Some("no permit matched".into()),
+        },
         Judgement::Blocked { name, rule } => Evaluation {
             decision: "deny",
             reason: if rule.is_none() { Some(name) } else { None },
@@ -388,7 +448,11 @@ pub fn evaluate_with(proxy_ctx: &ProxyContext, loaded: &LoadedPolicies, request:
 /// with the workspace's current policies.
 pub async fn evaluate(proxy_ctx: &ProxyContext, request: &CedarRequest<'_>) -> Evaluation {
     let Some(workspace_id) = proxy_ctx.workspace_id.as_deref() else {
-        return Evaluation { decision: "deny", policy: None, reason: Some("no workspace".into()) };
+        return Evaluation {
+            decision: "deny",
+            policy: None,
+            reason: Some("no workspace".into()),
+        };
     };
     let loaded = policies_for(workspace_id).await;
     evaluate_with(proxy_ctx, &loaded, request)
@@ -401,7 +465,10 @@ pub fn would_allow(proxy_ctx: &ProxyContext, request: &CedarRequest<'_>) -> bool
     let Some(loaded) = cache().get(workspace_id).map(|e| Arc::clone(&e.1)) else {
         return false;
     };
-    matches!(judge(proxy_ctx, &loaded, request), Judgement::Allow { rate: None, .. })
+    matches!(
+        judge(proxy_ctx, &loaded, request),
+        Judgement::Allow { rate: None, .. }
+    )
 }
 
 fn blocked(name: &str) -> PolicyDecision {
@@ -475,7 +542,11 @@ fn build(
 
     let entities = Entities::from_entities(
         [
-            Entity::new(principal.clone(), agent_attrs, HashSet::from([workspace.clone()]))?,
+            Entity::new(
+                principal.clone(),
+                agent_attrs,
+                HashSet::from([workspace.clone()]),
+            )?,
             Entity::new_no_attrs(workspace, HashSet::new()),
             Entity::new(resource.clone(), host_attrs, HashSet::new())?,
             Entity::new_no_attrs(action.clone(), HashSet::new()),
@@ -513,12 +584,18 @@ fn context_json(request: &CedarRequest<'_>, method: &str, host: &str) -> Value {
     ctx.insert("host".into(), Value::String(host.to_string()));
     ctx.insert("port".into(), Value::from(port));
     ctx.insert("path".into(), Value::String(path.to_string()));
-    ctx.insert("query_string".into(), Value::String(query_string.to_string()));
+    ctx.insert(
+        "query_string".into(),
+        Value::String(query_string.to_string()),
+    );
     ctx.insert("query".into(), Value::Object(query));
     ctx.insert("headers".into(), Value::Object(headers));
     ctx.insert("has_credential".into(), Value::Bool(request.has_injections));
     ctx.insert("is_llm_host".into(), Value::Bool(request.is_llm_host));
-    ctx.insert("body_truncated".into(), Value::Bool(request.body.is_truncated()));
+    ctx.insert(
+        "body_truncated".into(),
+        Value::Bool(request.body.is_truncated()),
+    );
     let bytes = request.body.bytes();
     ctx.insert(
         "has_body".into(),
@@ -628,7 +705,10 @@ permit(principal, action == OneCLI::Action::"POST", resource == OneCLI::Host::"m
         .iter()
         .map(|(n, t)| (n.to_string(), t.to_string()))
         .collect();
-        let loaded = LoadedPolicies { set: build_set(&owned), inspects_body: true };
+        let loaded = LoadedPolicies {
+            set: build_set(&owned),
+            inspects_body: true,
+        };
         let call = |body: &str| {
             let req = CedarRequest {
                 host: "mcp.example.com",
@@ -641,11 +721,34 @@ permit(principal, action == OneCLI::Action::"POST", resource == OneCLI::Host::"m
             };
             evaluate_with(&ctx(), &loaded, &req)
         };
-        let tool = |name: &str| format!(r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"{name}","arguments":{{}}}}}}"#);
-        assert_eq!(call(&tool("get_me")), Evaluation { decision: "allow", policy: Some("mcp/read-tools".into()), reason: None });
-        assert_eq!(call(&tool("delete_file")), Evaluation { decision: "approval", policy: Some("mcp/write-tools".into()), reason: None });
+        let tool = |name: &str| {
+            format!(
+                r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"{name}","arguments":{{}}}}}}"#
+            )
+        };
+        assert_eq!(
+            call(&tool("get_me")),
+            Evaluation {
+                decision: "allow",
+                policy: Some("mcp/read-tools".into()),
+                reason: None
+            }
+        );
+        assert_eq!(
+            call(&tool("delete_file")),
+            Evaluation {
+                decision: "approval",
+                policy: Some("mcp/write-tools".into()),
+                reason: None
+            }
+        );
         assert_eq!(call(&tool("issue_write")).decision, "deny");
-        assert_eq!(call(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#).policy.as_deref(), Some("mcp/protocol"));
+        assert_eq!(
+            call(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#)
+                .policy
+                .as_deref(),
+            Some("mcp/protocol")
+        );
     }
 
     #[test]
@@ -654,11 +757,26 @@ permit(principal, action == OneCLI::Action::"POST", resource == OneCLI::Host::"m
             "wiki-get",
             r#"permit(principal, action in [OneCLI::Action::"GET", OneCLI::Action::"HEAD"], resource == OneCLI::Host::"en.wikipedia.org");"#,
         )];
-        assert_eq!(eval(&p, "GET", "en.wikipedia.org:443", "/wiki/X", &[], None), Decision::Allow);
-        assert_eq!(eval(&p, "HEAD", "en.wikipedia.org", "/", &[], None), Decision::Allow);
-        assert_eq!(eval(&p, "POST", "en.wikipedia.org", "/wiki/X", &[], None), Decision::Deny);
-        assert_eq!(eval(&p, "GET", "example.com", "/", &[], None), Decision::Deny);
-        assert_eq!(eval(&[], "GET", "example.com", "/", &[], None), Decision::Deny);
+        assert_eq!(
+            eval(&p, "GET", "en.wikipedia.org:443", "/wiki/X", &[], None),
+            Decision::Allow
+        );
+        assert_eq!(
+            eval(&p, "HEAD", "en.wikipedia.org", "/", &[], None),
+            Decision::Allow
+        );
+        assert_eq!(
+            eval(&p, "POST", "en.wikipedia.org", "/wiki/X", &[], None),
+            Decision::Deny
+        );
+        assert_eq!(
+            eval(&p, "GET", "example.com", "/", &[], None),
+            Decision::Deny
+        );
+        assert_eq!(
+            eval(&[], "GET", "example.com", "/", &[], None),
+            Decision::Deny
+        );
     }
 
     #[test]
@@ -684,22 +802,71 @@ permit(principal, action == OneCLI::Action::"POST", resource == OneCLI::Host::"m
                 };"#,
             ),
         ];
-        assert_eq!(eval(&p, "GET", "de.wikipedia.org", "/w?q=cedar+policy", &[], None), Decision::Allow);
-        assert_eq!(eval(&p, "GET", "de.wikipedia.org", "/w?q=other", &[], None), Decision::Deny);
+        assert_eq!(
+            eval(
+                &p,
+                "GET",
+                "de.wikipedia.org",
+                "/w?q=cedar+policy",
+                &[],
+                None
+            ),
+            Decision::Allow
+        );
+        assert_eq!(
+            eval(&p, "GET", "de.wikipedia.org", "/w?q=other", &[], None),
+            Decision::Deny
+        );
         let json = [("content-type".to_string(), "application/json".to_string())];
-        assert_eq!(eval(&p, "POST", "api.example.com", "/send", &json, Some(br#"{"to":"a@ok.com","n":1.5}"#)), Decision::Allow);
-        assert_eq!(eval(&p, "POST", "api.example.com", "/send", &json, Some(br#"{"to":"x@evil.com"}"#)), Decision::Deny);
+        assert_eq!(
+            eval(
+                &p,
+                "POST",
+                "api.example.com",
+                "/send",
+                &json,
+                Some(br#"{"to":"a@ok.com","n":1.5}"#)
+            ),
+            Decision::Allow
+        );
+        assert_eq!(
+            eval(
+                &p,
+                "POST",
+                "api.example.com",
+                "/send",
+                &json,
+                Some(br#"{"to":"x@evil.com"}"#)
+            ),
+            Decision::Deny
+        );
     }
 
     #[test]
     fn one_statement_per_entry_and_annotations() {
-        assert!(parse_policy("a", r#"@rate_limit("10/minute") permit(principal, action, resource);"#).is_ok());
-        assert!(parse_policy("a", r#"@rate_limit("ten") permit(principal, action, resource);"#).is_err());
+        assert!(parse_policy(
+            "a",
+            r#"@rate_limit("10/minute") permit(principal, action, resource);"#
+        )
+        .is_ok());
+        assert!(parse_policy(
+            "a",
+            r#"@rate_limit("ten") permit(principal, action, resource);"#
+        )
+        .is_err());
         assert!(parse_policy("a", r#"@approval forbid(principal, action, resource);"#).is_err());
-        assert!(parse_policy("a", "permit(principal, action, resource); permit(principal, action, resource);").is_err());
+        assert!(parse_policy(
+            "a",
+            "permit(principal, action, resource); permit(principal, action, resource);"
+        )
+        .is_err());
         assert!(parse_policy("a", "").is_err());
         assert_eq!(parse_rate_limit("5/hour"), Some((5, 3600)));
-        assert_eq!(parse_policy("my rule", "permit(principal, action, resource);").map(|p| display_name(&p)), Ok("my rule".to_string()));
+        assert_eq!(
+            parse_policy("my rule", "permit(principal, action, resource);")
+                .map(|p| display_name(&p)),
+            Ok("my rule".to_string())
+        );
     }
 
     #[test]

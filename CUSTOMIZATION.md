@@ -9,10 +9,10 @@ deployment around it.
 
 ## Branches
 
-| Branch | Base | Status |
-|---|---|---|
-| `local-2.14.0` | upstream `main` at `9319d08` (release 2.14.0) | **running** |
-| `local-1.41.0` | upstream 1.41.0 (`fe0981f`) | previous deployment, kept for rollback |
+| Branch         | Base                                          | Status                                 |
+| -------------- | --------------------------------------------- | -------------------------------------- |
+| `local-2.14.0` | upstream `main` at `9319d08` (release 2.14.0) | **running**                            |
+| `local-1.41.0` | upstream 1.41.0 (`fe0981f`)                   | previous deployment, kept for rollback |
 
 Nothing here is pushed upstream.
 
@@ -85,14 +85,14 @@ For NanoClaw's per-session runtime ontology (nanoclaw `docs/ontology-runtime.md`
 
 ## Deployment (`~/.onecli`)
 
-| File | What changed |
-|---|---|
-| `docker-compose.yml` | Replaced with a 2.14 stack built from this checkout (also kept as `docker-compose.v2.yml`): `migrations`, `api`, `web`, `gateway` only, images `ghcr.io/onecli/onecli-*:2.14.0-local` with `pull_policy: never`. The gateway sets `GATEWAY_STRICT_DENY: "true"`, runs as uid `1000:1000` (owner of the existing CA files), and joins NanoClaw's `nanoclaw-egress` network with the alias `host.docker.internal`, so recreating it never drops that link. |
-| `docker-compose.yml` (capture) | The gateway also sets `GATEWAY_CAPTURE_DIR: /capture`, `GATEWAY_CAPTURE_EXCLUDE`, and mounts NanoClaw's `data/onecli-capture` at `/capture`. Backup before that change: `docker-compose.yml.bak-before-capture`. |
-| `docker-compose.yml.bak-local-1.41.0`, `.bak-ghcr-1.41.0` | Previous single-container setups. |
-| `.env` (mode 600, never commit) | `SECRET_ENCRYPTION_KEY` (carried over from 1.41's `/app/data/secret-encryption-key`, so stored secrets stay readable), `GATEWAY_INTERNAL_SECRET`, `BETTER_AUTH_SECRET`, `ONECLI_VERSION=2.14.0-local`, `POSTGRES_PORT=15432` (a host Postgres holds 5432), `ONECLI_EXTERNAL_URL=http://127.0.0.1:10254` (makes sign-in cookies work at that address). |
-| `config.json` | CLI `api-host` → `http://127.0.0.1:10256` (backup `config.json.bak-1.41`). |
-| `backups/` | `pg_dump -Fc` of the 1.41 database before the upgrade. |
+| File                                                      | What changed                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| --------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `docker-compose.yml`                                      | Replaced with a 2.14 stack built from this checkout (also kept as `docker-compose.v2.yml`): `migrations`, `api`, `web`, `gateway` only, images `ghcr.io/onecli/onecli-*:2.14.0-local` with `pull_policy: never`. The gateway sets `GATEWAY_STRICT_DENY: "true"`, runs as uid `1000:1000` (owner of the existing CA files), and joins NanoClaw's `nanoclaw-egress` network with the alias `host.docker.internal`, so recreating it never drops that link. |
+| `docker-compose.yml` (capture)                            | The gateway also sets `GATEWAY_CAPTURE_DIR: /capture`, `GATEWAY_CAPTURE_EXCLUDE`, and mounts NanoClaw's `data/onecli-capture` at `/capture`. Backup before that change: `docker-compose.yml.bak-before-capture`.                                                                                                                                                                                                                                         |
+| `docker-compose.yml.bak-local-1.41.0`, `.bak-ghcr-1.41.0` | Previous single-container setups.                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `.env` (mode 600, never commit)                           | `SECRET_ENCRYPTION_KEY` (carried over from 1.41's `/app/data/secret-encryption-key`, so stored secrets stay readable), `GATEWAY_INTERNAL_SECRET`, `BETTER_AUTH_SECRET`, `ONECLI_VERSION=2.14.0-local`, `POSTGRES_PORT=15432` (a host Postgres holds 5432), `ONECLI_EXTERNAL_URL=http://127.0.0.1:10254` (makes sign-in cookies work at that address).                                                                                                    |
+| `config.json`                                             | CLI `api-host` → `http://127.0.0.1:10256` (backup `config.json.bak-1.41`).                                                                                                                                                                                                                                                                                                                                                                               |
+| `backups/`                                                | `pg_dump -Fc` of the 1.41 database before the upgrade.                                                                                                                                                                                                                                                                                                                                                                                                   |
 
 Ports: dashboard 10254, gateway 10255, API 10256, Postgres 15432. The
 `app-data` volume (CA key and certificate) is reused, so the gateway's CA

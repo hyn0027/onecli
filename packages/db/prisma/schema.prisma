@@ -290,22 +290,22 @@ model Workspace {
   createdAt          DateTime @default(now()) @map("created_at")
   updatedAt          DateTime @updatedAt @map("updated_at")
 
-  createdByUser    User?             @relation("WorkspaceCreator", fields: [createdByUserId], references: [id])
-  organization     Organization      @relation(fields: [organizationId], references: [id])
-  apiKeys          ApiKey[]
-  agents           Agent[]
-  secrets          Secret[]
-  policyRulesV2    PolicyRuleV2[]
-  cedarPolicyRules CedarPolicyRule[]
+  createdByUser     User?              @relation("WorkspaceCreator", fields: [createdByUserId], references: [id])
+  organization      Organization       @relation(fields: [organizationId], references: [id])
+  apiKeys           ApiKey[]
+  agents            Agent[]
+  secrets           Secret[]
+  policyRulesV2     PolicyRuleV2[]
+  cedarPolicyRules  CedarPolicyRule[]
   cedarPolicyGroups CedarPolicyGroup[]
-  auditLogs        AuditLog[]
-  vaultConnections VaultConnection[]
-  onboardingSurvey OnboardingSurvey?
-  appConnections   AppConnection[]
-  appConfigs       AppConfig[]
-  budgets          Budget[] // cloud-only: per-secret spend budgets for this workspace (inert in OSS)
-  accessBindings   WorkspaceAccess[]
-  skills           Skill[]
+  auditLogs         AuditLog[]
+  vaultConnections  VaultConnection[]
+  onboardingSurvey  OnboardingSurvey?
+  appConnections    AppConnection[]
+  appConfigs        AppConfig[]
+  budgets           Budget[] // cloud-only: per-secret spend budgets for this workspace (inert in OSS)
+  accessBindings    WorkspaceAccess[]
+  skills            Skill[]
 
   @@unique([organizationId, slug])
   @@index([organizationId])
@@ -1968,29 +1968,29 @@ model ChannelAdapter {
 }
 
 model Secret {
-  id              String        @id @default(uuid())
-  scope           String        @default("workspace") // "workspace" | "organization"
-  workspaceId     String?       @map("workspace_id")
-  organizationId  String?       @map("organization_id")
-  name            String
-  type            String // "anthropic", "generic"
+  id                     String        @id @default(uuid())
+  scope                  String        @default("workspace") // "workspace" | "organization"
+  workspaceId            String?       @map("workspace_id")
+  organizationId         String?       @map("organization_id")
+  name                   String
+  type                   String // "anthropic", "generic"
   // Value source: "inline" (encryptedValue) or "onepassword" (resolved from opRef at request time)
-  valueSource     String        @default("inline") @map("value_source")
-  encryptedValue  String?       @map("encrypted_value") // AES-256-GCM via CryptoService; null when valueSource = "onepassword"
-  opRef           String?       @map("op_ref") // 1Password reference op://vault/item/field (valueSource = "onepassword")
-  hostPattern     String        @map("host_pattern") // "api.anthropic.com" or "*.example.com"
-  pathPattern     String?       @map("path_pattern") // "/v1/*", null = all paths
-  injectionConfig Json?         @map("injection_config") // type-specific config (generic: { headerName, valueFormat })
-  metadata        Json? // type-specific metadata (anthropic: { authMode: "api-key" | "oauth" })
+  valueSource            String        @default("inline") @map("value_source")
+  encryptedValue         String?       @map("encrypted_value") // AES-256-GCM via CryptoService; null when valueSource = "onepassword"
+  opRef                  String?       @map("op_ref") // 1Password reference op://vault/item/field (valueSource = "onepassword")
+  hostPattern            String        @map("host_pattern") // "api.anthropic.com" or "*.example.com"
+  pathPattern            String?       @map("path_pattern") // "/v1/*", null = all paths
+  injectionConfig        Json?         @map("injection_config") // type-specific config (generic: { headerName, valueFormat })
+  metadata               Json? // type-specific metadata (anthropic: { authMode: "api-key" | "oauth" })
   /// Local addition (two-layer credentials): a workspace-wide credential is granted to
   /// every agent of the workspace except those in `sharedExcludedAgentIds`; agents
   /// created later are in. The per-agent grants are kept in step by the API.
-  workspaceShared        Boolean  @default(false) @map("workspace_shared")
-  sharedExcludedAgentIds String[] @default([]) @map("shared_excluded_agent_ids")
-  createdAt       DateTime      @default(now()) @map("created_at")
-  updatedAt       DateTime      @updatedAt @map("updated_at")
-  workspace       Workspace?    @relation(fields: [workspaceId], references: [id])
-  organization    Organization? @relation(fields: [organizationId], references: [id])
+  workspaceShared        Boolean       @default(false) @map("workspace_shared")
+  sharedExcludedAgentIds String[]      @default([]) @map("shared_excluded_agent_ids")
+  createdAt              DateTime      @default(now()) @map("created_at")
+  updatedAt              DateTime      @updatedAt @map("updated_at")
+  workspace              Workspace?    @relation(fields: [workspaceId], references: [id])
+  organization           Organization? @relation(fields: [organizationId], references: [id])
 
   budgets           Budget[] // cloud-only: spend budgets on this secret (inert in OSS)
   policyRuleTargets PolicyRuleTarget[]
@@ -2708,20 +2708,20 @@ model AgentEvalSchedule {
 /// optional machine key (e.g. "skill:agent-browser", "mcp:github") so tooling
 /// can find, replace, or remove the group it created; null for groups made by hand.
 model CedarPolicyGroup {
-  id              String   @id @default(uuid())
-  workspaceId     String   @map("workspace_id")
+  id               String   @id @default(uuid())
+  workspaceId      String   @map("workspace_id")
   /// Unique per workspace; prefixes its policies' Cedar ids ("group/policy").
-  name            String
-  description     String?
-  enabled         Boolean  @default(true)
-  position        Int      @default(0)
-  source          String?
+  name             String
+  description      String?
+  enabled          Boolean  @default(true)
+  position         Int      @default(0)
+  source           String?
   /// Local addition (two-layer policies): agents that do not use this (workspace-wide)
   /// group. Its policies are compiled with `unless { principal in [...] }` for them.
   excludedAgentIds String[] @default([]) @map("excluded_agent_ids")
-  updatedByUserId String?  @map("updated_by_user_id")
-  createdAt       DateTime @default(now()) @map("created_at")
-  updatedAt       DateTime @updatedAt @map("updated_at")
+  updatedByUserId  String?  @map("updated_by_user_id")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
 
   workspace     Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   updatedByUser User?             @relation("CedarPolicyGroupUpdater", fields: [updatedByUserId], references: [id], onDelete: SetNull)

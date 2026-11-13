@@ -53,7 +53,6 @@ const DROPPED_REQUEST_HEADERS: &[&str] = &[
 const DROPPED_RESPONSE_HEADERS: &[&str] = &["set-cookie"];
 
 struct Config {
-    dir: PathBuf,
     exclude: Vec<String>,
     max_body: usize,
     writer: Mutex<mpsc::Sender<(String, String)>>,
@@ -80,14 +79,12 @@ fn config() -> Option<&'static Config> {
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(DEFAULT_MAX_BODY);
             let (tx, rx) = mpsc::channel::<(String, String)>();
-            let writer_dir = dir.clone();
+            tracing::info!(dir = %dir.display(), "recording forwarded requests (GATEWAY_CAPTURE_DIR)");
             std::thread::Builder::new()
                 .name("capture-writer".into())
-                .spawn(move || write_loop(&writer_dir, rx))
+                .spawn(move || write_loop(&dir, rx))
                 .ok()?;
-            tracing::info!(dir = %dir.display(), "recording forwarded requests (GATEWAY_CAPTURE_DIR)");
             Some(Config {
-                dir,
                 exclude,
                 max_body,
                 writer: Mutex::new(tx),
@@ -118,10 +115,12 @@ fn write_loop(dir: &std::path::Path, rx: mpsc::Receiver<(String, String)>) {
 
 fn excluded(exclude: &[String], host: &str) -> bool {
     let host = common::util::strip_port(host).to_ascii_lowercase();
-    exclude.iter().any(|pattern| match pattern.strip_prefix("*.") {
-        Some(suffix) => host == suffix || host.ends_with(&format!(".{suffix}")),
-        None => host == *pattern,
-    })
+    exclude
+        .iter()
+        .any(|pattern| match pattern.strip_prefix("*.") {
+            Some(suffix) => host == suffix || host.ends_with(&format!(".{suffix}")),
+            None => host == *pattern,
+        })
 }
 
 fn header_map(headers: &HeaderMap, dropped: &[&str]) -> Value {
@@ -155,7 +154,8 @@ impl Body {
     fn push(&mut self, chunk: &[u8], max: usize) {
         self.total += chunk.len();
         let room = max.saturating_sub(self.bytes.len());
-        self.bytes.extend_from_slice(&chunk[..chunk.len().min(room)]);
+        self.bytes
+            .extend_from_slice(&chunk[..chunk.len().min(room)]);
     }
 }
 
@@ -201,7 +201,10 @@ pub fn start(
     static SEQ: AtomicU64 = AtomicU64::new(0);
     let now = time::OffsetDateTime::now_utc();
     let ms = (now.unix_timestamp_nanos() / 1_000_000) as u64;
-    let id = format!("{ms:013}-{:06}", SEQ.fetch_add(1, Ordering::Relaxed) % 1_000_000);
+    let id = format!(
+        "{ms:013}-{:06}",
+        SEQ.fetch_add(1, Ordering::Relaxed) % 1_000_000
+    );
     let file = format!(
         "{:04}{:02}{:02}{:02}.jsonl",
         now.year(),
@@ -303,7 +306,9 @@ impl Capture {
                 json!({ "bytes": body.total, "truncated": truncated, "text": masked, "masked": hit })
             }
             Some(Err(_)) => json!({ "bytes": body.total, "truncated": truncated, "binary": true }),
-            None => json!({ "bytes": body.total, "truncated": truncated, "undecoded_encoding": true }),
+            None => {
+                json!({ "bytes": body.total, "truncated": truncated, "undecoded_encoding": true })
+            }
         }
     }
 }

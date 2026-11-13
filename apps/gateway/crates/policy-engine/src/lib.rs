@@ -24,12 +24,12 @@
 
 mod assemble;
 mod catalog;
+/// Local addition: the Cedar policy engine (decides every request).
+pub mod cedar;
 mod enforce;
 mod evaluate;
 mod graphql;
 mod inject_select;
-/// Local addition: the Cedar policy engine (decides every request).
-pub mod cedar;
 mod loaders;
 
 // The free direct-user twin, re-exported for ONE consumer: the licensed

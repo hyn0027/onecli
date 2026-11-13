@@ -48,17 +48,17 @@ policy matches and no enabled `forbid` policy does.
 
 ## Request model
 
-| Part | Value |
-|---|---|
-| principal | `OneCLI::Agent::"<agent id>"`, attributes `id`, `identifier` (the NanoClaw agent group id), `name`; member of `OneCLI::Workspace::"<workspace id>"` |
-| action | `OneCLI::Action::"<METHOD>"` — exactly the HTTP method (`GET`, `HEAD`, `POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS`, ...; an undecrypted tunnel is `CONNECT`). There are no groups: list several with `action in [OneCLI::Action::"GET", OneCLI::Action::"HEAD"]` |
-| resource | `OneCLI::Host::"<host>"` (lower case, no port), attribute `name` |
-| `context.method`, `host`, `port`, `path` | request line; `path` excludes the query |
-| `context.query_string`, `context.query` | raw query and a record of parameters (`context.query has q && context.query.q like "..."`) |
-| `context.headers` | record of the agent's request headers before injection, lower-case names (`context.headers["content-type"]`); `proxy-authorization` is omitted |
-| `context.has_body`, `context.body`, `context.body_truncated` | the body as text when it was buffered (bodies are buffered only when an enabled policy mentions `body` or `json`; the first 256 KB are inspected) |
-| `context.json` | the body parsed as JSON when it is a complete JSON object: objects become records, arrays sets, integers longs; floats become strings, nulls are dropped |
-| `context.has_credential`, `context.is_llm_host` | whether the gateway injects a stored credential for this host, and whether the host is a known LLM provider |
+| Part                                                         | Value                                                                                                                                                                                                                                                            |
+| ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| principal                                                    | `OneCLI::Agent::"<agent id>"`, attributes `id`, `identifier` (the NanoClaw agent group id), `name`; member of `OneCLI::Workspace::"<workspace id>"`                                                                                                              |
+| action                                                       | `OneCLI::Action::"<METHOD>"` — exactly the HTTP method (`GET`, `HEAD`, `POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS`, ...; an undecrypted tunnel is `CONNECT`). There are no groups: list several with `action in [OneCLI::Action::"GET", OneCLI::Action::"HEAD"]` |
+| resource                                                     | `OneCLI::Host::"<host>"` (lower case, no port), attribute `name`                                                                                                                                                                                                 |
+| `context.method`, `host`, `port`, `path`                     | request line; `path` excludes the query                                                                                                                                                                                                                          |
+| `context.query_string`, `context.query`                      | raw query and a record of parameters (`context.query has q && context.query.q like "..."`)                                                                                                                                                                       |
+| `context.headers`                                            | record of the agent's request headers before injection, lower-case names (`context.headers["content-type"]`); `proxy-authorization` is omitted                                                                                                                   |
+| `context.has_body`, `context.body`, `context.body_truncated` | the body as text when it was buffered (bodies are buffered only when an enabled policy mentions `body` or `json`; the first 256 KB are inspected)                                                                                                                |
+| `context.json`                                               | the body parsed as JSON when it is a complete JSON object: objects become records, arrays sets, integers longs; floats become strings, nulls are dropped                                                                                                         |
+| `context.has_credential`, `context.is_llm_host`              | whether the gateway injects a stored credential for this host, and whether the host is a known LLM provider                                                                                                                                                      |
 
 ## Annotations
 
@@ -113,9 +113,15 @@ key) decides a described request with the workspace's current policies, exactly 
 for a live request of that agent, without forwarding it or counting rate limits:
 
 ```json
-{"agent_id": "<agent id>", "method": "POST", "host": "api.githubcopilot.com",
- "path": "/mcp/", "body": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"get_me\"}}",
- "headers": {}, "has_credential": true}
+{
+  "agent_id": "<agent id>",
+  "method": "POST",
+  "host": "api.githubcopilot.com",
+  "path": "/mcp/",
+  "body": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"get_me\"}}",
+  "headers": {},
+  "has_credential": true
+}
 ```
 
 returns `{"decision": "allow" | "approval" | "deny", "policy": "<group>/<policy>" | null, "reason": ...}`.

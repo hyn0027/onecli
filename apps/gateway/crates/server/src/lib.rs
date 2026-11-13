@@ -342,19 +342,10 @@ impl GatewayServer {
             )
             // Local addition: parse-check a Cedar policy document with the
             // gateway's own parser (the api calls this before saving one).
-            .route(
-                "/v1/cedar/validate",
-                axum::routing::post(validate_cedar),
-            )
-            .route(
-                "/v1/cedar/status",
-                axum::routing::get(cedar_status),
-            )
+            .route("/v1/cedar/validate", axum::routing::post(validate_cedar))
+            .route("/v1/cedar/status", axum::routing::get(cedar_status))
             // Local addition: decide a described request (no forwarding) for tooling.
-            .route(
-                "/v1/cedar/evaluate",
-                axum::routing::post(evaluate_cedar),
-            )
+            .route("/v1/cedar/evaluate", axum::routing::post(evaluate_cedar))
             .route(
                 "/v1/approvals/pending",
                 axum::routing::get(get_pending_approvals),
@@ -581,11 +572,19 @@ async fn evaluate_cedar(
     {
         Ok(row) => row,
         Err(e) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(serde_json::json!({ "error": e.to_string() }))).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(serde_json::json!({ "error": e.to_string() })),
+            )
+                .into_response();
         }
     };
     let Some((identifier, name)) = agent else {
-        return (StatusCode::NOT_FOUND, axum::Json(serde_json::json!({ "error": "agent not found in this workspace" }))).into_response();
+        return (
+            StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({ "error": "agent not found in this workspace" })),
+        )
+            .into_response();
     };
     let ctx = context::ProxyContext {
         workspace_id: Some(auth.workspace_id.clone()),
@@ -604,7 +603,9 @@ async fn evaluate_cedar(
         body: body
             .body
             .as_deref()
-            .map_or(policy::ConditionBody::None, |b| policy::ConditionBody::Full(b.as_bytes())),
+            .map_or(policy::ConditionBody::None, |b| {
+                policy::ConditionBody::Full(b.as_bytes())
+            }),
         has_injections: body.has_credential,
         is_llm_host: policy::is_llm_host(&body.host),
     };

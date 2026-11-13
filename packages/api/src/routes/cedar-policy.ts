@@ -27,7 +27,7 @@
  * `excludedAgentIds` lists agents that do not use that workspace-wide group; a
  * secret's `workspaceShared` + `sharedExcludedAgentIds` do the same for credentials.
  *
- * Writes need workspace management rights. Parsing is done by the gateway
+ * Writes need a workspace owner or admin (lib/workspace-admin.ts, our own check). Parsing is done by the gateway
  * (`/v1/cedar/validate`) so the dashboard and enforcement can never disagree
  * about what a policy means. The gateway decides every request with the
  * policies that are on; `policy_rules_v2` rules only grant credentials.
@@ -37,7 +37,7 @@ import { z } from "zod";
 import { db } from "@onecli/db";
 import type { ApiEnv } from "../types";
 import { authMiddleware, requireWorkspaceId } from "../middleware/auth";
-import { requireWorkspaceManagement } from "../ee/services/workspace-management-guard";
+import { requireWorkspaceAdmin } from "../lib/workspace-admin";
 import { ServiceError } from "../services/errors";
 import { getGatewayInternalUrl } from "../lib/env";
 import { invalidateGatewayCache } from "../lib/gateway-invalidate";
@@ -483,7 +483,7 @@ export const cedarPolicyRoutes = () => {
   app.post("/groups", async (c) => {
     const auth = c.get("auth");
     const workspaceId = requireWorkspaceId(auth);
-    await requireWorkspaceManagement(auth, workspaceId);
+    await requireWorkspaceAdmin(auth, workspaceId);
     const body = parse(groupCreateSchema, await c.req.json().catch(() => null));
     if (await groupNameTaken(workspaceId, body.name)) {
       throw new ServiceError(
@@ -519,7 +519,7 @@ export const cedarPolicyRoutes = () => {
   app.put("/groups/sync", async (c) => {
     const auth = c.get("auth");
     const workspaceId = requireWorkspaceId(auth);
-    await requireWorkspaceManagement(auth, workspaceId);
+    await requireWorkspaceAdmin(auth, workspaceId);
     const body = parse(groupSyncSchema, await c.req.json().catch(() => null));
     const existing = await db.cedarPolicyGroup.findFirst({
       where: body.source
@@ -602,7 +602,7 @@ export const cedarPolicyRoutes = () => {
   app.patch("/groups/:id", async (c) => {
     const auth = c.get("auth");
     const workspaceId = requireWorkspaceId(auth);
-    await requireWorkspaceManagement(auth, workspaceId);
+    await requireWorkspaceAdmin(auth, workspaceId);
     const current = await findGroup(workspaceId, c.req.param("id"));
     const body = parse(groupUpdateSchema, await c.req.json().catch(() => null));
     if (
@@ -659,7 +659,7 @@ export const cedarPolicyRoutes = () => {
   app.delete("/groups/:id", async (c) => {
     const auth = c.get("auth");
     const workspaceId = requireWorkspaceId(auth);
-    await requireWorkspaceManagement(auth, workspaceId);
+    await requireWorkspaceAdmin(auth, workspaceId);
     const current = await findGroup(workspaceId, c.req.param("id"));
     await db.cedarPolicyGroup.delete({ where: { id: current.id } });
     invalidateGatewayCache(c.req.raw);
@@ -671,7 +671,7 @@ export const cedarPolicyRoutes = () => {
   app.post("/policies", async (c) => {
     const auth = c.get("auth");
     const workspaceId = requireWorkspaceId(auth);
-    await requireWorkspaceManagement(auth, workspaceId);
+    await requireWorkspaceAdmin(auth, workspaceId);
     const body = parse(createSchema, await c.req.json().catch(() => null));
     const group = await findGroup(workspaceId, body.groupId);
     if (await policyNameTaken(group.id, body.name)) {
@@ -710,7 +710,7 @@ export const cedarPolicyRoutes = () => {
   app.patch("/policies/:id", async (c) => {
     const auth = c.get("auth");
     const workspaceId = requireWorkspaceId(auth);
-    await requireWorkspaceManagement(auth, workspaceId);
+    await requireWorkspaceAdmin(auth, workspaceId);
     const current = await findPolicy(workspaceId, c.req.param("id"));
     const body = parse(updateSchema, await c.req.json().catch(() => null));
     const group =
@@ -764,7 +764,7 @@ export const cedarPolicyRoutes = () => {
   app.delete("/policies/:id", async (c) => {
     const auth = c.get("auth");
     const workspaceId = requireWorkspaceId(auth);
-    await requireWorkspaceManagement(auth, workspaceId);
+    await requireWorkspaceAdmin(auth, workspaceId);
     const current = await findPolicy(workspaceId, c.req.param("id"));
     await db.cedarPolicyRule.delete({ where: { id: current.id } });
     invalidateGatewayCache(c.req.raw);
@@ -776,7 +776,7 @@ export const cedarPolicyRoutes = () => {
   app.put("/shared-credentials/:secretId", async (c) => {
     const auth = c.get("auth");
     const workspaceId = requireWorkspaceId(auth);
-    await requireWorkspaceManagement(auth, workspaceId);
+    await requireWorkspaceAdmin(auth, workspaceId);
     const body = parse(
       sharedCredentialSchema,
       await c.req.json().catch(() => null),
