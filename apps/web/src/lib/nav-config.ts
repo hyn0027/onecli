@@ -193,6 +193,12 @@ export const getWorkspaceSettingsSections = (
         url: `/w/${workspaceId}/settings/policy`,
         icon: Shield,
       },
+      // Local addition: workspace-wide credentials (the workspace layer).
+      {
+        title: "Credentials",
+        url: `/w/${workspaceId}/settings/credentials`,
+        icon: KeyRound,
+      },
     ],
   },
 ];

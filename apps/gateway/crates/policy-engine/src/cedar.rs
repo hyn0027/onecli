@@ -191,7 +191,9 @@ async fn load(workspace_id: &str) -> anyhow::Result<Vec<(String, String)>> {
         .get()
         .ok_or_else(|| anyhow::anyhow!("cedar loader not initialised"))?;
     let rows = sqlx::query_as::<_, (String, String)>(
-        "SELECT g.name || '/' || r.name, r.policy_text \
+        // Local addition: `compiled_text` (the policy with its workspace group's agent
+        // exclusions added, see the API's two-layer policies) wins when set.
+        "SELECT g.name || '/' || r.name, COALESCE(r.compiled_text, r.policy_text) \
          FROM cedar_policy_rules r JOIN cedar_policy_groups g ON g.id = r.group_id \
          WHERE r.workspace_id = $1 AND r.enabled AND g.enabled \
          ORDER BY g.position, g.created_at, r.position, r.created_at",

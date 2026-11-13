@@ -40,8 +40,8 @@ describe("agentSectionsFor", () => {
     expect(byo).not.toContain("webhooks");
     // Memory is written by a HOSTED agent's tools — a BYO agent has none.
     expect(byo).not.toContain("memory");
-    // Its own page still works: Connections and Models.
-    expect(byo).toEqual(["connections", "models"]);
+    // Its own page still works: Credentials (local: Connections + Models) and Policies.
+    expect(byo).toEqual(["credentials", "policies"]);
   });
 });
 
@@ -64,7 +64,7 @@ describe("agentSectionBlocked", () => {
   });
 
   it("never blocks a shared section, or a segment that isn't a section", () => {
-    expect(agentSectionBlocked("connections", "byo")).toBe(false);
+    expect(agentSectionBlocked("credentials", "byo")).toBe(false);
     // The index is not a section at all — it redirects.
     expect(agentSectionBlocked("", "byo")).toBe(false);
     // An unknown segment is Next's 404, not ours — claiming "hosted only"
@@ -90,9 +90,9 @@ describe("the rail's shape (§3.18 as amended)", () => {
     expect(hosted).toEqual([
       "chat",
       "channels",
-      "connections",
+      "credentials",
       "contacts",
-      "models",
+      "policies",
       "instructions",
       "skills",
       "schedules",
@@ -103,19 +103,21 @@ describe("the rail's shape (§3.18 as amended)", () => {
     ]);
   });
 
-  it("consolidates apps and secrets into one Connections section", () => {
+  it("consolidates apps, secrets and LLM keys into one Credentials section (local)", () => {
     const sections = AGENT_SECTIONS.map((s) => s.section);
-    expect(sections).toContain("connections");
+    expect(sections).toContain("credentials");
+    expect(sections).not.toContain("connections");
+    expect(sections).not.toContain("models");
     expect(sections).not.toContain("apps");
     expect(sections).not.toContain("secrets");
   });
 
-  it("keeps Access to exactly what the agent is GIVEN: connections, contacts and models", () => {
+  it("keeps Access to exactly what the agent is GIVEN: credentials, contacts and its own policies", () => {
     const access = AGENT_SECTIONS.filter((s) => s.group === "access");
     expect(access.map((s) => s.section)).toEqual([
-      "connections",
+      "credentials",
       "contacts",
-      "models",
+      "policies",
     ]);
   });
 
@@ -161,8 +163,8 @@ describe("defaultAgentSection — where the agent index lands", () => {
     expect(defaultAgentSection("hosted")).toBe("chat");
   });
 
-  it("sends a BYO agent to Connections — it has no thread", () => {
-    expect(defaultAgentSection("byo")).toBe("connections");
+  it("sends a BYO agent to Credentials — it has no thread", () => {
+    expect(defaultAgentSection("byo")).toBe("credentials");
   });
 
   it("always names a section that kind of agent actually has", () => {
@@ -217,12 +219,12 @@ describe("Slack sits beside Chat (§3.16)", () => {
 });
 
 describe("Contacts is an Access entry (PR 5b)", () => {
-  it("sits under Access right after Connections: who the agent may talk with is something it is GIVEN, not a place you go to talk", () => {
+  it("sits under Access right after Credentials: who the agent may talk with is something it is GIVEN, not a place you go to talk", () => {
     const contacts = AGENT_SECTIONS.find((s) => s.section === "contacts");
     expect(contacts?.group).toBe("access");
     expect(
       AGENT_SECTIONS.filter((s) => s.group === "access").map((s) => s.section),
-    ).toEqual(["connections", "contacts", "models"]);
+    ).toEqual(["credentials", "contacts", "policies"]);
   });
 
   it("stays hosted-only: a BYO agent is not reached through the platform", () => {

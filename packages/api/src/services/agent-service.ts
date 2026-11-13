@@ -20,6 +20,7 @@ import {
 import { presenceSettingsUrlFor } from "./channels/registry";
 import { autoAttachLlmKeys } from "./llm-autoattach-service";
 import { attachWorkspaceResourcesToNewAgent } from "./workspace-autoattach-service";
+import { attachSharedSecretsToNewAgent } from "./workspace-layers-service";
 import { dropPrincipalFromPolicyInTx, lockScope } from "./policy-service";
 import { llmProvider } from "../llm/registry";
 import { isOnpremEdition } from "../lib/policy-flags";
@@ -354,6 +355,8 @@ export const createAgent = async (
     // (`workspace-autoattach-service`), so it can work right away. Runs after
     // the LLM attach and is best-effort the same way: it never fails create.
     await attachWorkspaceResourcesToNewAgent(workspaceId, agent.id, userId);
+    // Local addition: the workspace layer of credentials (workspace-wide secrets).
+    await attachSharedSecretsToNewAgent(workspaceId, agent.id, userId);
 
     // `llmKeys` is part of the create contract: an empty array means the
     // workspace has no LLM key, which is the one thing a caller must be able

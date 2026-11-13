@@ -1,4 +1,4 @@
-import { apiDelete, apiGet, apiPatch, apiPost } from "./client";
+import { apiDelete, apiGet, apiPatch, apiPost, apiPut } from "./client";
 
 // Local addition: the workspace's Cedar policies (one statement each, in groups)
 // and the gateway's enforcement posture (Workspace Settings → Policy). Workspace comes from the
@@ -37,6 +37,8 @@ export interface CedarPolicyGroup {
   position: number;
   /** Machine key of the tooling that manages the group, e.g. "skill:agent-browser". */
   source: string | null;
+  /** Agents that do not use this workspace-wide group (two-layer policies). */
+  excludedAgentIds: string[];
   updatedAt: string;
   policies: CedarPolicyRule[];
 }
@@ -50,7 +52,11 @@ export interface PublishedRule {
   rateLimit: number | null;
   rateLimitWindow: string | null;
   source: string;
-  identities: { agentId: string | null; userId: string | null; groupId: string | null }[];
+  identities: {
+    agentId: string | null;
+    userId: string | null;
+    groupId: string | null;
+  }[];
   targets: {
     kind: string;
     hostPattern: string | null;
@@ -73,6 +79,9 @@ export interface SecretConfig {
   injectionConfig: Record<string, unknown> | null;
   valueSource: string;
   authMode: string | null;
+  /** Workspace-wide: granted to every agent except `sharedExcludedAgentIds`. */
+  workspaceShared: boolean;
+  sharedExcludedAgentIds: string[];
 }
 
 export interface AgentRef {
@@ -115,6 +124,7 @@ export interface GroupInput {
   description?: string | null;
   enabled?: boolean;
   source?: string | null;
+  excludedAgentIds?: string[];
 }
 
 export const createGroup = (input: GroupInput) =>
@@ -124,3 +134,14 @@ export const updateGroup = (id: string, input: Partial<GroupInput>) =>
   apiPatch<CedarPolicyGroup>(`${base}/groups/${id}`, input);
 
 export const removeGroup = (id: string) => apiDelete(`${base}/groups/${id}`);
+
+/** Make a workspace credential workspace-wide (or not) and choose which agents use it.
+ *  Returns the agents that gained and lost the grant. */
+export const setSharedCredential = (
+  secretId: string,
+  input: { shared: boolean; excludedAgentIds?: string[] },
+) =>
+  apiPut<{ granted: string[]; revoked: string[] }>(
+    `${base}/shared-credentials/${secretId}`,
+    input,
+  );

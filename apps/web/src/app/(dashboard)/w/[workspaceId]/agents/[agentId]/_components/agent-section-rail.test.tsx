@@ -134,7 +134,7 @@ describe("the rail's Advanced drill-in", () => {
       screen.queryByRole("link", { name: "Advanced" }),
     ).not.toBeInTheDocument();
     // The everyday sections are gone from this view.
-    expect(screen.queryByText("Models")).not.toBeInTheDocument();
+    expect(screen.queryByText("Credentials")).not.toBeInTheDocument();
     expect(screen.queryByText("Chat")).not.toBeInTheDocument();
   });
 
@@ -147,7 +147,7 @@ describe("the rail's Advanced drill-in", () => {
       screen.queryByRole("link", { name: "Advanced" }),
     ).not.toBeInTheDocument();
     expect(screen.queryByText("Back to agent")).not.toBeInTheDocument();
-    expect(screen.getAllByText("Connections").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Credentials").length).toBeGreaterThan(0);
   });
 
   it("keeps the Advanced row while the instance is still loading", () => {
@@ -162,6 +162,6 @@ describe("the rail's Advanced drill-in", () => {
     for (const row of screen.getAllByRole("link", { name: "Advanced" }))
       expect(row).toHaveAttribute("href", "/w/p1/agents/ag-1/webhooks");
     // The rest of the rail stays.
-    expect(screen.getAllByText("Models").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Credentials").length).toBeGreaterThan(0);
   });
 });

@@ -1982,6 +1982,11 @@ model Secret {
   pathPattern     String?       @map("path_pattern") // "/v1/*", null = all paths
   injectionConfig Json?         @map("injection_config") // type-specific config (generic: { headerName, valueFormat })
   metadata        Json? // type-specific metadata (anthropic: { authMode: "api-key" | "oauth" })
+  /// Local addition (two-layer credentials): a workspace-wide credential is granted to
+  /// every agent of the workspace except those in `sharedExcludedAgentIds`; agents
+  /// created later are in. The per-agent grants are kept in step by the API.
+  workspaceShared        Boolean  @default(false) @map("workspace_shared")
+  sharedExcludedAgentIds String[] @default([]) @map("shared_excluded_agent_ids")
   createdAt       DateTime      @default(now()) @map("created_at")
   updatedAt       DateTime      @updatedAt @map("updated_at")
   workspace       Workspace?    @relation(fields: [workspaceId], references: [id])
@@ -2711,6 +2716,9 @@ model CedarPolicyGroup {
   enabled         Boolean  @default(true)
   position        Int      @default(0)
   source          String?
+  /// Local addition (two-layer policies): agents that do not use this (workspace-wide)
+  /// group. Its policies are compiled with `unless { principal in [...] }` for them.
+  excludedAgentIds String[] @default([]) @map("excluded_agent_ids")
   updatedByUserId String?  @map("updated_by_user_id")
   createdAt       DateTime @default(now()) @map("created_at")
   updatedAt       DateTime @updatedAt @map("updated_at")
@@ -2734,6 +2742,9 @@ model CedarPolicyRule {
   name            String
   description     String?
   policyText      String   @map("policy_text")
+  /// Local addition: what the gateway enforces when set — `policyText` with the
+  /// group's agent exclusions added. Null = `policyText` as written.
+  compiledText    String?  @map("compiled_text")
   enabled         Boolean  @default(true)
   position        Int      @default(0)
   updatedByUserId String?  @map("updated_by_user_id")

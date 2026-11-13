@@ -114,6 +114,9 @@ export interface Secret {
   injectionConfig: unknown;
   metadata: Record<string, unknown> | null;
   scope: string | null;
+  /** Local addition: workspace-wide (granted to every agent not excluded). */
+  workspaceShared?: boolean;
+  sharedExcludedAgentIds?: string[];
   createdAt: string;
   /** Latest injected inference or model-list call to the key's host failed
    * with a status that indicts the key itself (401/403 auth, 402 billing,

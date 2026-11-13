@@ -90,8 +90,12 @@ export const SecretGrantsTab = ({
     );
   }
 
-  const pool = (secretsQuery.data ?? []).filter((s) =>
-    kind === "secret" ? s.type === "generic" : s.type !== "generic",
+  // Local change: workspace-wide credentials are listed apart ("From the
+  // workspace"), where switching one off excludes the agent from the share.
+  const pool = (secretsQuery.data ?? []).filter(
+    (s) =>
+      !s.workspaceShared &&
+      (kind === "secret" ? s.type === "generic" : s.type !== "generic"),
   );
   if (pool.length === 0) {
     return (

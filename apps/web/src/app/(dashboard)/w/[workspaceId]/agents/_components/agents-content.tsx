@@ -135,7 +135,7 @@ export const AgentsContent = ({
     const target = agents.find((a) => a.id.startsWith(manageAgentId));
     if (!target) return;
     redirected.current = true;
-    router.replace(agentSectionPath(pathname, target.id, "connections"));
+    router.replace(agentSectionPath(pathname, target.id, "credentials"));
     // Depends on `agents` (the query's stable reference), never on the
     // `agentList` fallback: a fresh array literal every render would re-run
     // this effect on every render.

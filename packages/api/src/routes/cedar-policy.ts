@@ -19,6 +19,13 @@
  *   POST   /v1/cedar-policy/policies        add a policy to a group
  *   PATCH  /v1/cedar-policy/policies/:id    edit / switch / move a policy
  *   DELETE /v1/cedar-policy/policies/:id    remove a policy
+ *   PUT    /v1/cedar-policy/shared-credentials/:secretId
+ *                                           make a credential workspace-wide (or
+ *                                           not) and choose which agents use it
+ *
+ * Two layers (see services/workspace-layers-service.ts): a group's
+ * `excludedAgentIds` lists agents that do not use that workspace-wide group; a
+ * secret's `workspaceShared` + `sharedExcludedAgentIds` do the same for credentials.
  *
  * Writes need workspace management rights. Parsing is done by the gateway
  * (`/v1/cedar/validate`) so the dashboard and enforcement can never disagree
@@ -34,6 +41,11 @@ import { requireWorkspaceManagement } from "../ee/services/workspace-management-
 import { ServiceError } from "../services/errors";
 import { getGatewayInternalUrl } from "../lib/env";
 import { invalidateGatewayCache } from "../lib/gateway-invalidate";
+import { autoAttachScope } from "../services/llm-autoattach-service";
+import {
+  recompileGroup,
+  syncSharedSecret,
+} from "../services/workspace-layers-service";
 
 /** Largest single policy accepted (characters). */
 const MAX_POLICY_LENGTH = 50_000;
@@ -43,7 +55,10 @@ const nameSchema = z
   .trim()
   .min(1, "name is required")
   .max(100, "name must be at most 100 characters")
-  .regex(/^[A-Za-z0-9 _.:-]+$/, "name may use letters, digits, spaces, and _ . : -");
+  .regex(
+    /^[A-Za-z0-9 _.:-]+$/,
+    "name may use letters, digits, spaces, and _ . : -",
+  );
 
 const descriptionSchema = z.string().max(500).optional().nullable();
 const policyTextSchema = z.string().min(1).max(MAX_POLICY_LENGTH);
@@ -74,12 +89,15 @@ const groupCreateSchema = z.object({
   source: sourceSchema,
 });
 
+const agentIdsSchema = z.array(z.string().min(1).max(100)).max(1000);
+
 const groupUpdateSchema = z
   .object({
     name: nameSchema.optional(),
     description: descriptionSchema,
     enabled: z.boolean().optional(),
     source: sourceSchema,
+    excludedAgentIds: agentIdsSchema.optional(),
   })
   .refine((d) => Object.keys(d).length > 0, "nothing to update");
 
@@ -104,6 +122,11 @@ const groupSyncSchema = z
     (d) => new Set(d.policies.map((p) => p.name)).size === d.policies.length,
     "policy names must be unique within the group",
   );
+
+const sharedCredentialSchema = z.object({
+  shared: z.boolean(),
+  excludedAgentIds: agentIdsSchema.optional(),
+});
 
 const validateSchema = z.object({
   name: z.string().max(100).optional(),
@@ -166,7 +189,11 @@ const validateWithGateway = async (
 };
 
 /** Validate or throw a 400 carrying the parser's message. */
-const requireValid = async (request: Request, name: string, policyText: string) => {
+const requireValid = async (
+  request: Request,
+  name: string,
+  policyText: string,
+) => {
   const v = await validateWithGateway(request, name, policyText);
   if (!v.valid) throw new ServiceError("BAD_REQUEST", v.error);
   return v;
@@ -242,7 +269,12 @@ const grantContext = async (workspaceId: string) => {
         OR: [
           { workspaceId },
           ...(workspace
-            ? [{ organizationId: workspace.organizationId, scope: "organization" }]
+            ? [
+                {
+                  organizationId: workspace.organizationId,
+                  scope: "organization",
+                },
+              ]
             : []),
         ],
       },
@@ -256,6 +288,8 @@ const grantContext = async (workspaceId: string) => {
         injectionConfig: true,
         valueSource: true,
         metadata: true,
+        workspaceShared: true,
+        sharedExcludedAgentIds: true,
       },
       orderBy: { name: "asc" },
     }),
@@ -296,6 +330,7 @@ const GROUP_SELECT = {
   enabled: true,
   position: true,
   source: true,
+  excludedAgentIds: true,
   updatedAt: true,
 } as const;
 
@@ -319,19 +354,39 @@ const findGroup = async (workspaceId: string, id: string) => {
   return row;
 };
 
-const policyNameTaken = async (groupId: string, name: string, exceptId?: string) =>
+const policyNameTaken = async (
+  groupId: string,
+  name: string,
+  exceptId?: string,
+) =>
   (await db.cedarPolicyRule.count({
     where: { groupId, name, ...(exceptId ? { NOT: { id: exceptId } } : {}) },
   })) > 0;
 
-const groupNameTaken = async (workspaceId: string, name: string, exceptId?: string) =>
+const groupNameTaken = async (
+  workspaceId: string,
+  name: string,
+  exceptId?: string,
+) =>
   (await db.cedarPolicyGroup.count({
-    where: { workspaceId, name, ...(exceptId ? { NOT: { id: exceptId } } : {}) },
+    where: {
+      workspaceId,
+      name,
+      ...(exceptId ? { NOT: { id: exceptId } } : {}),
+    },
   })) > 0;
 
-const groupSourceTaken = async (workspaceId: string, source: string, exceptId?: string) =>
+const groupSourceTaken = async (
+  workspaceId: string,
+  source: string,
+  exceptId?: string,
+) =>
   (await db.cedarPolicyGroup.count({
-    where: { workspaceId, source, ...(exceptId ? { NOT: { id: exceptId } } : {}) },
+    where: {
+      workspaceId,
+      source,
+      ...(exceptId ? { NOT: { id: exceptId } } : {}),
+    },
   })) > 0;
 
 /** The Cedar id the gateway gives a policy. */
@@ -339,8 +394,25 @@ const cedarId = (group: string, policy: string) => `${group}/${policy}`;
 
 const nextGroupPosition = async (workspaceId: string) =>
   ((
-    await db.cedarPolicyGroup.aggregate({ where: { workspaceId }, _max: { position: true } })
+    await db.cedarPolicyGroup.aggregate({
+      where: { workspaceId },
+      _max: { position: true },
+    })
   )._max.position ?? -1) + 1;
+
+/** Recompile a group's policies for its agent exclusions, validating with the gateway. */
+const recompile = (request: Request, groupId: string) =>
+  recompileGroup(groupId, (name, text) =>
+    requireValid(request, name, text).then(
+      () => undefined,
+      (err: unknown) => {
+        throw new ServiceError(
+          "BAD_REQUEST",
+          `${name} with its agent exclusions: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      },
+    ),
+  );
 
 export const cedarPolicyRoutes = () => {
   const app = new Hono<ApiEnv>();
@@ -398,7 +470,11 @@ export const cedarPolicyRoutes = () => {
     requireWorkspaceId(c.get("auth"));
     const body = parse(validateSchema, await c.req.json().catch(() => null));
     return c.json(
-      await validateWithGateway(c.req.raw, body.name || "policy", body.policyText),
+      await validateWithGateway(
+        c.req.raw,
+        body.name || "policy",
+        body.policyText,
+      ),
     );
   });
 
@@ -410,10 +486,16 @@ export const cedarPolicyRoutes = () => {
     await requireWorkspaceManagement(auth, workspaceId);
     const body = parse(groupCreateSchema, await c.req.json().catch(() => null));
     if (await groupNameTaken(workspaceId, body.name)) {
-      throw new ServiceError("CONFLICT", `A group named "${body.name}" already exists`);
+      throw new ServiceError(
+        "CONFLICT",
+        `A group named "${body.name}" already exists`,
+      );
     }
     if (body.source && (await groupSourceTaken(workspaceId, body.source))) {
-      throw new ServiceError("CONFLICT", `A group with source "${body.source}" already exists`);
+      throw new ServiceError(
+        "CONFLICT",
+        `A group with source "${body.source}" already exists`,
+      );
     }
     const row = await db.cedarPolicyGroup.create({
       data: {
@@ -440,18 +522,32 @@ export const cedarPolicyRoutes = () => {
     await requireWorkspaceManagement(auth, workspaceId);
     const body = parse(groupSyncSchema, await c.req.json().catch(() => null));
     const existing = await db.cedarPolicyGroup.findFirst({
-      where: body.source ? { workspaceId, source: body.source } : { workspaceId, name: body.name },
+      where: body.source
+        ? { workspaceId, source: body.source }
+        : { workspaceId, name: body.name },
       select: { id: true, enabled: true },
     });
     if (await groupNameTaken(workspaceId, body.name, existing?.id)) {
-      throw new ServiceError("CONFLICT", `A different group is already named "${body.name}"`);
+      throw new ServiceError(
+        "CONFLICT",
+        `A different group is already named "${body.name}"`,
+      );
     }
     for (const p of body.policies) {
-      await requireValid(c.req.raw, cedarId(body.name, p.name), p.policyText).catch((err) => {
-        throw new ServiceError("BAD_REQUEST", `${p.name}: ${err instanceof Error ? err.message : String(err)}`);
+      await requireValid(
+        c.req.raw,
+        cedarId(body.name, p.name),
+        p.policyText,
+      ).catch((err) => {
+        throw new ServiceError(
+          "BAD_REQUEST",
+          `${p.name}: ${err instanceof Error ? err.message : String(err)}`,
+        );
       });
     }
-    const position = existing ? undefined : await nextGroupPosition(workspaceId);
+    const position = existing
+      ? undefined
+      : await nextGroupPosition(workspaceId);
     const group = await db.$transaction(async (tx) => {
       const g = existing
         ? await tx.cedarPolicyGroup.update({
@@ -498,6 +594,7 @@ export const cedarPolicyRoutes = () => {
         },
       });
     });
+    await recompile(c.req.raw, group.id);
     invalidateGatewayCache(c.req.raw);
     return c.json(group, existing ? 200 : 201);
   });
@@ -508,23 +605,53 @@ export const cedarPolicyRoutes = () => {
     await requireWorkspaceManagement(auth, workspaceId);
     const current = await findGroup(workspaceId, c.req.param("id"));
     const body = parse(groupUpdateSchema, await c.req.json().catch(() => null));
-    if (body.name && body.name !== current.name && (await groupNameTaken(workspaceId, body.name, current.id))) {
-      throw new ServiceError("CONFLICT", `A group named "${body.name}" already exists`);
+    if (
+      body.name &&
+      body.name !== current.name &&
+      (await groupNameTaken(workspaceId, body.name, current.id))
+    ) {
+      throw new ServiceError(
+        "CONFLICT",
+        `A group named "${body.name}" already exists`,
+      );
     }
-    if (body.source && (await groupSourceTaken(workspaceId, body.source, current.id))) {
-      throw new ServiceError("CONFLICT", `A group with source "${body.source}" already exists`);
+    if (
+      body.source &&
+      (await groupSourceTaken(workspaceId, body.source, current.id))
+    ) {
+      throw new ServiceError(
+        "CONFLICT",
+        `A group with source "${body.source}" already exists`,
+      );
     }
     const row = await db.cedarPolicyGroup.update({
       where: { id: current.id },
       data: {
         ...(body.name !== undefined ? { name: body.name } : {}),
-        ...(body.description !== undefined ? { description: body.description } : {}),
+        ...(body.description !== undefined
+          ? { description: body.description }
+          : {}),
         ...(body.enabled !== undefined ? { enabled: body.enabled } : {}),
         ...(body.source !== undefined ? { source: body.source } : {}),
+        ...(body.excludedAgentIds !== undefined
+          ? { excludedAgentIds: [...new Set(body.excludedAgentIds)] }
+          : {}),
         updatedByUserId: auth.userId,
       },
       select: GROUP_SELECT,
     });
+    if (body.excludedAgentIds !== undefined) {
+      try {
+        await recompile(c.req.raw, current.id);
+      } catch (err) {
+        // Keep the group as it was when its policies cannot carry the exclusions.
+        await db.cedarPolicyGroup.update({
+          where: { id: current.id },
+          data: { excludedAgentIds: current.excludedAgentIds },
+        });
+        throw err;
+      }
+    }
     invalidateGatewayCache(c.req.raw);
     return c.json(row);
   });
@@ -548,9 +675,16 @@ export const cedarPolicyRoutes = () => {
     const body = parse(createSchema, await c.req.json().catch(() => null));
     const group = await findGroup(workspaceId, body.groupId);
     if (await policyNameTaken(group.id, body.name)) {
-      throw new ServiceError("CONFLICT", `Group "${group.name}" already has a policy named "${body.name}"`);
+      throw new ServiceError(
+        "CONFLICT",
+        `Group "${group.name}" already has a policy named "${body.name}"`,
+      );
     }
-    await requireValid(c.req.raw, cedarId(group.name, body.name), body.policyText);
+    await requireValid(
+      c.req.raw,
+      cedarId(group.name, body.name),
+      body.policyText,
+    );
     const last = await db.cedarPolicyRule.aggregate({
       where: { groupId: group.id },
       _max: { position: true },
@@ -568,6 +702,7 @@ export const cedarPolicyRoutes = () => {
       },
       select: POLICY_SELECT,
     });
+    await recompile(c.req.raw, group.id);
     invalidateGatewayCache(c.req.raw);
     return c.json(row, 201);
   });
@@ -583,24 +718,45 @@ export const cedarPolicyRoutes = () => {
         ? await findGroup(workspaceId, body.groupId)
         : { id: current.groupId, name: current.group.name };
     const name = body.name ?? current.name;
-    if ((name !== current.name || group.id !== current.groupId) && (await policyNameTaken(group.id, name, current.id))) {
-      throw new ServiceError("CONFLICT", `Group "${group.name}" already has a policy named "${name}"`);
+    if (
+      (name !== current.name || group.id !== current.groupId) &&
+      (await policyNameTaken(group.id, name, current.id))
+    ) {
+      throw new ServiceError(
+        "CONFLICT",
+        `Group "${group.name}" already has a policy named "${name}"`,
+      );
     }
-    if (body.policyText !== undefined || name !== current.name || group.id !== current.groupId) {
-      await requireValid(c.req.raw, cedarId(group.name, name), body.policyText ?? current.policyText);
+    if (
+      body.policyText !== undefined ||
+      name !== current.name ||
+      group.id !== current.groupId
+    ) {
+      await requireValid(
+        c.req.raw,
+        cedarId(group.name, name),
+        body.policyText ?? current.policyText,
+      );
     }
     const row = await db.cedarPolicyRule.update({
       where: { id: current.id },
       data: {
         ...(group.id !== current.groupId ? { groupId: group.id } : {}),
         ...(body.name !== undefined ? { name: body.name } : {}),
-        ...(body.description !== undefined ? { description: body.description } : {}),
-        ...(body.policyText !== undefined ? { policyText: body.policyText } : {}),
+        ...(body.description !== undefined
+          ? { description: body.description }
+          : {}),
+        ...(body.policyText !== undefined
+          ? { policyText: body.policyText }
+          : {}),
         ...(body.enabled !== undefined ? { enabled: body.enabled } : {}),
+        // Recompiled below for the group it now belongs to.
+        compiledText: null,
         updatedByUserId: auth.userId,
       },
       select: POLICY_SELECT,
     });
+    await recompile(c.req.raw, group.id);
     invalidateGatewayCache(c.req.raw);
     return c.json(row);
   });
@@ -613,6 +769,49 @@ export const cedarPolicyRoutes = () => {
     await db.cedarPolicyRule.delete({ where: { id: current.id } });
     invalidateGatewayCache(c.req.raw);
     return c.body(null, 204);
+  });
+
+  // ── Workspace-wide credentials ────────────────────────────────────────────
+
+  app.put("/shared-credentials/:secretId", async (c) => {
+    const auth = c.get("auth");
+    const workspaceId = requireWorkspaceId(auth);
+    await requireWorkspaceManagement(auth, workspaceId);
+    const body = parse(
+      sharedCredentialSchema,
+      await c.req.json().catch(() => null),
+    );
+    const secret = await db.secret.findFirst({
+      where: { id: c.req.param("secretId"), workspaceId, scope: "workspace" },
+      select: { id: true, workspaceShared: true, sharedExcludedAgentIds: true },
+    });
+    if (!secret)
+      throw new ServiceError("NOT_FOUND", "Workspace credential not found");
+    const scope = await autoAttachScope(workspaceId);
+    if (!scope) throw new ServiceError("NOT_FOUND", "Workspace not found");
+    const previous = {
+      shared: secret.workspaceShared,
+      excluded: secret.sharedExcludedAgentIds,
+    };
+    await db.secret.update({
+      where: { id: secret.id },
+      data: {
+        workspaceShared: body.shared,
+        ...(body.excludedAgentIds !== undefined
+          ? { sharedExcludedAgentIds: [...new Set(body.excludedAgentIds)] }
+          : body.shared
+            ? {}
+            : { sharedExcludedAgentIds: [] }),
+      },
+    });
+    const change = await syncSharedSecret(
+      scope,
+      secret.id,
+      auth.userId ?? null,
+      previous,
+    );
+    invalidateGatewayCache(c.req.raw);
+    return c.json(change);
   });
 
   return app;

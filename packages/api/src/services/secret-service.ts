@@ -2,7 +2,6 @@ import { db, Prisma } from "@onecli/db";
 import { getCrypto } from "../providers";
 import { ServiceError } from "./errors";
 import { attachLlmKeyToKeylessAgents } from "./llm-autoattach-service";
-import { attachNewSecretToAllAgents } from "./workspace-autoattach-service";
 import { isLlmProviderId } from "../llm/registry";
 import type { ResourceScope } from "./resource-scope";
 import { scopeWhere, scopeCreate, scopeOwnership } from "./resource-scope";
@@ -180,6 +179,9 @@ export const listSecrets = async (scope: ResourceScope) => {
       injectionConfig: true,
       metadata: true,
       scope: true,
+      // Local addition: the workspace layer of credentials.
+      workspaceShared: true,
+      sharedExcludedAgentIds: true,
       createdAt: true,
       updatedAt: true,
     },
@@ -312,13 +314,11 @@ const attachNewSecret = async (
     ).catch(() => ({ agentIds: [] as string[] }));
     return agentIds;
   }
-  // Never throws (it logs and returns nothing instead).
-  const written = await attachNewSecretToAllAgents(
-    scope.workspaceId,
-    secret.id,
-    userId,
-  );
-  return written.secrets.map((s) => s.agentId);
+  // Local change (two-layer credentials): a new custom secret is no longer
+  // attached to every agent. It reaches an agent by being attached to it (the
+  // agent page's create-then-attach) or by being made workspace-wide
+  // (`workspace-layers-service`).
+  return [];
 };
 
 export const createSecret = async (

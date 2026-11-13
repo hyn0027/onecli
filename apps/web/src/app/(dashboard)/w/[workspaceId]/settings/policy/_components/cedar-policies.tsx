@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { createContext, useContext, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
@@ -28,7 +28,10 @@ import {
 import { Switch } from "@onecli/ui/components/switch";
 import { Textarea } from "@onecli/ui/components/textarea";
 import { cedarPolicy } from "@/lib/api";
+import { agentGroupSource, newPolicyText } from "@/lib/cedar-scope";
+import { AgentUses, usesSummary } from "./agent-uses";
 import type {
+  AgentRef,
   CedarPolicyGroup,
   CedarPolicyRule,
   CedarPolicySummary,
@@ -44,22 +47,67 @@ import type {
 
 export const POLICY_QUERY_KEY = ["cedar-policy"] as const;
 
-const NEW_POLICY = `permit(
-  principal,
-  action == OneCLI::Action::"GET",
-  resource == OneCLI::Host::"example.com"
-);`;
+/** The agent whose page this is, or null on the workspace page. New policies on an
+ *  agent's page name that agent as principal, and new groups there are marked as its. */
+const ScopeContext = createContext<AgentRef | null>(null);
+
+/** Every agent of the workspace (for "which agents use this workspace group"). */
+const AgentsContext = createContext<AgentRef[]>([]);
+
+/** Workspace page only: which agents use this workspace-wide group. */
+const GroupAgents = ({ group }: { group: CedarPolicyGroup }) => {
+  const agents = useContext(AgentsContext);
+  const refresh = useRefresh();
+  const [open, setOpen] = useState(false);
+  const save = useMutation({
+    mutationFn: (excludedAgentIds: string[]) =>
+      cedarPolicy.updateGroup(group.id, { excludedAgentIds }),
+    onSuccess: () => {
+      toast.success("Saved: the gateway applies it within seconds");
+      refresh();
+    },
+    onError: (err) =>
+      toast.error(errorText(err, "Could not save which agents use the group")),
+  });
+  return (
+    <div className="border-b px-4 py-2">
+      <button
+        type="button"
+        className="text-muted-foreground hover:text-foreground flex w-full items-center gap-2 text-sm"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+      >
+        <span aria-hidden>{open ? "▾" : "▸"}</span>
+        Used by {usesSummary(agents, group.excludedAgentIds)}
+      </button>
+      {open && (
+        <div className="pt-2">
+          <AgentUses
+            agents={agents}
+            excluded={group.excludedAgentIds}
+            disabled={save.isPending}
+            onChange={(ids) => save.mutate(ids)}
+          />
+        </div>
+      )}
+    </div>
+  );
+};
 
 const errorText = (err: unknown, fallback: string) =>
   err instanceof Error ? err.message : fallback;
 
 /** Policies the gateway currently applies (on, in a group that is on). */
 export const activeCount = (groups: CedarPolicyGroup[]) =>
-  groups.reduce((n, g) => n + (g.enabled ? g.policies.filter((p) => p.enabled).length : 0), 0);
+  groups.reduce(
+    (n, g) => n + (g.enabled ? g.policies.filter((p) => p.enabled).length : 0),
+    0,
+  );
 
 const useRefresh = () => {
   const queryClient = useQueryClient();
-  return () => void queryClient.invalidateQueries({ queryKey: POLICY_QUERY_KEY });
+  return () =>
+    void queryClient.invalidateQueries({ queryKey: POLICY_QUERY_KEY });
 };
 
 /**
@@ -68,12 +116,26 @@ const useRefresh = () => {
  * note in parentheses — "(read-only; toolset actions)" — set apart in lighter
  * text, one item per "; ".
  */
-const Description = ({ text, className = "" }: { text: string; className?: string }) => {
+const Description = ({
+  text,
+  className = "",
+}: {
+  text: string;
+  className?: string;
+}) => {
   const m = text.trim().match(/^([\s\S]*?)\s*\(([^()]*)\)$/);
   const main = m?.[1] ? m[1] : text.trim();
-  const notes = m?.[1] && m[2] ? m[2].split(";").map((n) => n.trim()).filter(Boolean) : [];
+  const notes =
+    m?.[1] && m[2]
+      ? m[2]
+          .split(";")
+          .map((n) => n.trim())
+          .filter(Boolean)
+      : [];
   return (
-    <div className={`text-muted-foreground max-w-prose text-sm leading-snug ${className}`}>
+    <div
+      className={`text-muted-foreground max-w-prose text-sm leading-snug ${className}`}
+    >
       <p className="break-words whitespace-pre-line">{main}</p>
       {notes.length > 0 && (
         <p className="mt-0.5 flex flex-wrap gap-x-3 text-xs opacity-80">
@@ -92,7 +154,9 @@ const Modifiers = ({ summary }: { summary: CedarPolicySummary }) => (
       {summary.effect}
     </Badge>
     {summary.approval && <Badge variant="outline">needs approval</Badge>}
-    {summary.rate_limit && <Badge variant="outline">rate limit {summary.rate_limit}</Badge>}
+    {summary.rate_limit && (
+      <Badge variant="outline">rate limit {summary.rate_limit}</Badge>
+    )}
   </>
 );
 
@@ -141,13 +205,15 @@ const PolicyForm = ({
   const refresh = useRefresh();
   const [name, setName] = useState(initial?.name ?? "");
   const [description, setDescription] = useState(initial?.description ?? "");
-  const [text, setText] = useState(initial?.policyText ?? NEW_POLICY);
+  const scope = useContext(ScopeContext);
+  const [text, setText] = useState(initial?.policyText ?? newPolicyText(scope));
   const [targetGroup, setTargetGroup] = useState(groupId);
   const [checked, setChecked] = useState<CedarValidation | null>(null);
   const groupName = groups.find((g) => g.id === targetGroup)?.name ?? "group";
 
   const validate = useMutation({
-    mutationFn: () => cedarPolicy.validate(`${groupName}/${name || "policy"}`, text),
+    mutationFn: () =>
+      cedarPolicy.validate(`${groupName}/${name || "policy"}`, text),
     onSuccess: setChecked,
     onError: (err) => toast.error(errorText(err, "Validation failed")),
   });
@@ -160,7 +226,9 @@ const PolicyForm = ({
         description: description.trim() || null,
         policyText: text,
       };
-      return initial ? cedarPolicy.update(initial.id, input) : cedarPolicy.create(input);
+      return initial
+        ? cedarPolicy.update(initial.id, input)
+        : cedarPolicy.create(input);
     },
     onSuccess: () => {
       toast.success(initial ? "Policy saved" : "Policy added");
@@ -239,10 +307,17 @@ const PolicyForm = ({
         <Button variant="ghost" onClick={onDone} disabled={save.isPending}>
           Cancel
         </Button>
-        <Button variant="outline" onClick={() => validate.mutate()} disabled={validate.isPending}>
+        <Button
+          variant="outline"
+          onClick={() => validate.mutate()}
+          disabled={validate.isPending}
+        >
           {validate.isPending ? "Checking..." : "Validate"}
         </Button>
-        <Button onClick={() => save.mutate()} disabled={save.isPending || !name.trim()}>
+        <Button
+          onClick={() => save.mutate()}
+          disabled={save.isPending || !name.trim()}
+        >
           {save.isPending ? "Saving..." : initial ? "Save" : "Add policy"}
         </Button>
       </div>
@@ -264,12 +339,14 @@ const PolicyRow = ({
   const [showCode, setShowCode] = useState(false);
 
   const toggle = useMutation({
-    mutationFn: (enabled: boolean) => cedarPolicy.update(policy.id, { enabled }),
+    mutationFn: (enabled: boolean) =>
+      cedarPolicy.update(policy.id, { enabled }),
     onSuccess: (_row, enabled) => {
       toast.success(`${group.name}/${policy.name} ${enabled ? "on" : "off"}`);
       refresh();
     },
-    onError: (err) => toast.error(errorText(err, "Could not switch the policy")),
+    onError: (err) =>
+      toast.error(errorText(err, "Could not switch the policy")),
   });
 
   const remove = useMutation({
@@ -284,7 +361,12 @@ const PolicyRow = ({
   if (editing) {
     return (
       <div className="p-3">
-        <PolicyForm groupId={group.id} groups={groups} initial={policy} onDone={() => setEditing(false)} />
+        <PolicyForm
+          groupId={group.id}
+          groups={groups}
+          initial={policy}
+          onDone={() => setEditing(false)}
+        />
       </div>
     );
   }
@@ -308,11 +390,19 @@ const PolicyRow = ({
         >
           {policy.name}
         </button>
-        {policy.validation?.valid && <Modifiers summary={policy.validation.policy} />}
+        {policy.validation?.valid && (
+          <Modifiers summary={policy.validation.policy} />
+        )}
         {invalid && <Badge variant="destructive">invalid</Badge>}
-        {policy.enabled && !group.enabled && <Badge variant="outline">group off</Badge>}
+        {policy.enabled && !group.enabled && (
+          <Badge variant="outline">group off</Badge>
+        )}
         <div className="ml-auto flex gap-1">
-          <Button variant="ghost" size="sm" onClick={() => setShowCode((v) => !v)}>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setShowCode((v) => !v)}
+          >
             {showCode ? "Hide code" : "Code"}
           </Button>
           <Button variant="ghost" size="sm" onClick={() => setEditing(true)}>
@@ -325,7 +415,9 @@ const PolicyRow = ({
           />
         </div>
       </div>
-      {policy.description && <Description text={policy.description} className="mt-1 pl-10" />}
+      {policy.description && (
+        <Description text={policy.description} className="mt-1 pl-10" />
+      )}
       {showCode && (
         <pre className="bg-muted mt-2 overflow-x-auto rounded-md p-3 font-mono text-xs leading-relaxed">
           {policy.policyText}
@@ -333,7 +425,8 @@ const PolicyRow = ({
       )}
       {invalid && (
         <p className="text-destructive mt-1 text-xs">
-          Not valid — the gateway blocks everything while this is on: {policy.validation?.valid === false && policy.validation.error}
+          Not valid. The gateway blocks everything while this is on:{" "}
+          {policy.validation?.valid === false && policy.validation.error}
         </p>
       )}
     </div>
@@ -354,15 +447,22 @@ const GroupForm = ({
   const [name, setName] = useState(initial?.name ?? "");
   const [description, setDescription] = useState(initial?.description ?? "");
   const [source, setSource] = useState(initial?.source ?? "");
+  const scope = useContext(ScopeContext);
 
   const save = useMutation({
     mutationFn: () => {
       const input = {
         name: name.trim(),
         description: description.trim() || null,
-        source: source.trim() || null,
+        // On an agent's page a new group gets a source ending in @<agent>, so it stays
+        // on that page while it has no policies yet.
+        source:
+          source.trim() ||
+          (scope && !initial ? agentGroupSource(name, scope) : null),
       };
-      return initial ? cedarPolicy.updateGroup(initial.id, input) : cedarPolicy.createGroup(input);
+      return initial
+        ? cedarPolicy.updateGroup(initial.id, input)
+        : cedarPolicy.createGroup(input);
     },
     onSuccess: () => {
       toast.success(initial ? "Group saved" : "Group added");
@@ -390,7 +490,11 @@ const GroupForm = ({
             id="group-source"
             value={source}
             onChange={(e) => setSource(e.target.value)}
-            placeholder="skill:agent-browser"
+            placeholder={
+              scope
+                ? `skill:agent-browser@${scope.identifier}`
+                : "skill:agent-browser"
+            }
           />
         </div>
       </div>
@@ -408,7 +512,10 @@ const GroupForm = ({
         <Button variant="ghost" onClick={onDone} disabled={save.isPending}>
           Cancel
         </Button>
-        <Button onClick={() => save.mutate()} disabled={save.isPending || !name.trim()}>
+        <Button
+          onClick={() => save.mutate()}
+          disabled={save.isPending || !name.trim()}
+        >
           {save.isPending ? "Saving..." : initial ? "Save group" : "Add group"}
         </Button>
       </div>
@@ -419,7 +526,8 @@ const GroupForm = ({
 const GroupSwitch = ({ group }: { group: CedarPolicyGroup }) => {
   const refresh = useRefresh();
   const toggle = useMutation({
-    mutationFn: (enabled: boolean) => cedarPolicy.updateGroup(group.id, { enabled }),
+    mutationFn: (enabled: boolean) =>
+      cedarPolicy.updateGroup(group.id, { enabled }),
     onSuccess: (_row, enabled) => {
       toast.success(`Group ${group.name} ${enabled ? "on" : "off"}`);
       refresh();
@@ -438,15 +546,18 @@ const GroupSwitch = ({ group }: { group: CedarPolicyGroup }) => {
   );
 };
 
-const countOn = (group: CedarPolicyGroup) => group.policies.filter((p) => p.enabled).length;
+const countOn = (group: CedarPolicyGroup) =>
+  group.policies.filter((p) => p.enabled).length;
 
 /** All groups, one clickable row each. */
 const GroupList = ({
   groups,
   onOpen,
+  usedBy,
 }: {
   groups: CedarPolicyGroup[];
   onOpen: (id: string) => void;
+  usedBy?: (g: CedarPolicyGroup) => string;
 }) => (
   <div className="divide-y rounded-lg border">
     {groups.map((g) => (
@@ -464,7 +575,10 @@ const GroupList = ({
         <span className="font-medium">{g.name}</span>
         {g.source && <Badge variant="outline">{g.source}</Badge>}
         <span className="text-muted-foreground ml-auto shrink-0 text-sm tabular-nums">
-          {g.enabled ? `${countOn(g)} of ${g.policies.length} on` : `off · ${g.policies.length} policies`}
+          {g.enabled
+            ? `${countOn(g)} of ${g.policies.length} on`
+            : `off · ${g.policies.length} policies`}
+          {usedBy && g.excludedAgentIds.length > 0 && ` · ${usedBy(g)}`}
         </span>
         <span className="text-muted-foreground" aria-hidden>
           ›
@@ -476,7 +590,9 @@ const GroupList = ({
         )}
       </div>
     ))}
-    {groups.length === 0 && <p className="text-muted-foreground p-4 text-sm">No groups yet.</p>}
+    {groups.length === 0 && (
+      <p className="text-muted-foreground p-4 text-sm">No groups yet.</p>
+    )}
   </div>
 );
 
@@ -493,6 +609,7 @@ const GroupDetail = ({
   onBack: () => void;
 }) => {
   const refresh = useRefresh();
+  const scope = useContext(ScopeContext);
   const [editing, setEditing] = useState(false);
   const [adding, setAdding] = useState(false);
   const [query, setQuery] = useState("");
@@ -513,7 +630,10 @@ const GroupDetail = ({
   const shown = group.policies.filter(
     (p) =>
       (filter === "all" || (filter === "on") === p.enabled) &&
-      (!q || [p.name, p.description ?? "", p.policyText].some((t) => t.toLowerCase().includes(q))),
+      (!q ||
+        [p.name, p.description ?? "", p.policyText].some((t) =>
+          t.toLowerCase().includes(q),
+        )),
   );
   const pages = Math.max(1, Math.ceil(shown.length / PAGE_SIZE));
   const current = Math.min(page, pages - 1);
@@ -537,10 +657,16 @@ const GroupDetail = ({
             <span className="font-medium">{group.name}</span>
             {group.source && <Badge variant="outline">{group.source}</Badge>}
             <span className="text-muted-foreground text-sm">
-              {group.enabled ? `${countOn(group)} of ${group.policies.length} on` : "off — none of its policies apply"}
+              {group.enabled
+                ? `${countOn(group)} of ${group.policies.length} on`
+                : "off: none of its policies apply"}
             </span>
             <div className="ml-auto flex gap-1">
-              <Button variant="ghost" size="sm" onClick={() => setEditing(true)}>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setEditing(true)}
+              >
                 Edit
               </Button>
               <DeleteButton
@@ -556,6 +682,8 @@ const GroupDetail = ({
             )}
           </div>
         )}
+
+        {!scope && <GroupAgents group={group} />}
 
         <div className="flex flex-wrap items-center gap-2 border-b px-4 py-2">
           <Input
@@ -597,7 +725,11 @@ const GroupDetail = ({
 
         {adding && (
           <div className="border-b p-3">
-            <PolicyForm groupId={group.id} groups={groups} onDone={() => setAdding(false)} />
+            <PolicyForm
+              groupId={group.id}
+              groups={groups}
+              onDone={() => setAdding(false)}
+            />
           </div>
         )}
         <div className="divide-y">
@@ -605,19 +737,31 @@ const GroupDetail = ({
             <PolicyRow key={p.id} policy={p} group={group} groups={groups} />
           ))}
           {group.policies.length === 0 && !adding && (
-            <p className="text-muted-foreground p-4 text-sm">No policies in this group.</p>
+            <p className="text-muted-foreground p-4 text-sm">
+              No policies in this group.
+            </p>
           )}
         </div>
 
         {pages > 1 && (
           <div className="flex items-center justify-end gap-2 border-t px-4 py-2">
-            <Button variant="outline" size="sm" disabled={current === 0} onClick={() => setPage(current - 1)}>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={current === 0}
+              onClick={() => setPage(current - 1)}
+            >
               Previous
             </Button>
             <span className="text-muted-foreground text-sm tabular-nums">
               Page {current + 1} of {pages}
             </span>
-            <Button variant="outline" size="sm" disabled={current >= pages - 1} onClick={() => setPage(current + 1)}>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={current >= pages - 1}
+              onClick={() => setPage(current + 1)}
+            >
               Next
             </Button>
           </div>
@@ -629,67 +773,110 @@ const GroupDetail = ({
 
 const Reference = () => (
   <details className="text-sm">
-    <summary className="text-muted-foreground cursor-pointer">Cedar reference for this gateway</summary>
+    <summary className="text-muted-foreground cursor-pointer">
+      Cedar reference for this gateway
+    </summary>
     <div className="text-muted-foreground mt-2 space-y-1">
       <p>
-        <b>principal</b> <code>OneCLI::Agent::&quot;&lt;id&gt;&quot;</code> — attributes <code>id</code>,{" "}
-        <code>identifier</code> (NanoClaw agent group), <code>name</code>; member of{" "}
+        <b>principal</b> <code>OneCLI::Agent::&quot;&lt;id&gt;&quot;</code>:
+        attributes <code>id</code>, <code>identifier</code> (NanoClaw agent
+        group), <code>name</code>; member of{" "}
         <code>OneCLI::Workspace::&quot;&lt;id&gt;&quot;</code>.
       </p>
       <p>
-        <b>action</b> <code>OneCLI::Action::&quot;GET&quot;</code>, <code>&quot;POST&quot;</code>, … — exactly the
-        HTTP method; several at once: <code>action in [OneCLI::Action::&quot;GET&quot;, OneCLI::Action::&quot;HEAD&quot;]</code>.
+        <b>action</b> <code>OneCLI::Action::&quot;GET&quot;</code>,{" "}
+        <code>&quot;POST&quot;</code>, …: exactly the HTTP method; several at
+        once:{" "}
+        <code>
+          action in [OneCLI::Action::&quot;GET&quot;,
+          OneCLI::Action::&quot;HEAD&quot;]
+        </code>
+        .
       </p>
       <p>
-        <b>resource</b> <code>OneCLI::Host::&quot;api.example.com&quot;</code> — attribute <code>name</code>, e.g.{" "}
+        <b>resource</b> <code>OneCLI::Host::&quot;api.example.com&quot;</code>:
+        attribute <code>name</code>, e.g.{" "}
         <code>resource.name like &quot;*.example.com&quot;</code>.
       </p>
       <p>
-        <b>context</b> <code>method</code>, <code>host</code>, <code>port</code>, <code>path</code>,{" "}
-        <code>query</code> (record), <code>query_string</code>, <code>headers</code> (record, lower-case),{" "}
-        <code>has_body</code>, <code>body</code>, <code>json</code>, <code>body_truncated</code>,{" "}
-        <code>has_credential</code>, <code>is_llm_host</code>. Guard optional parts with <code>has</code>.
+        <b>context</b> <code>method</code>, <code>host</code>, <code>port</code>
+        , <code>path</code>, <code>query</code> (record),{" "}
+        <code>query_string</code>, <code>headers</code> (record, lower-case),{" "}
+        <code>has_body</code>, <code>body</code>, <code>json</code>,{" "}
+        <code>body_truncated</code>, <code>has_credential</code>,{" "}
+        <code>is_llm_host</code>. Guard optional parts with <code>has</code>.
       </p>
       <p>
-        <b>annotations</b> on permit: <code>@approval</code>, <code>@rate_limit(&quot;60/minute&quot;)</code>.
-        No policy on, or an invalid one switched on, blocks every request.
+        <b>annotations</b> on permit: <code>@approval</code>,{" "}
+        <code>@rate_limit(&quot;60/minute&quot;)</code>. No policy on, or an
+        invalid one switched on, blocks every request.
       </p>
       <p>
-        <b>groups</b> a policy applies only when it and its group are both on. Its Cedar id, shown in
-        logs and 403 responses, is <code>group/policy</code>.
+        <b>groups</b> a policy applies only when it and its group are both on.
+        Its Cedar id, shown in logs and 403 responses, is{" "}
+        <code>group/policy</code>.
       </p>
     </div>
   </details>
 );
 
-export const CedarPolicies = ({ groups }: { groups: CedarPolicyGroup[] }) => {
+/** The groups shown on one page: the workspace's universal groups, or (with `agent`)
+ *  the groups that belong to that agent alone. */
+export const CedarPolicies = ({
+  groups,
+  agent = null,
+  agents = [],
+}: {
+  groups: CedarPolicyGroup[];
+  agent?: AgentRef | null;
+  /** Every agent of the workspace (the workspace page's "used by" controls). */
+  agents?: AgentRef[];
+}) => {
   const [adding, setAdding] = useState(false);
   const [openId, setOpenId] = useState<string | null>(null);
   const open = groups.find((g) => g.id === openId) ?? null;
   return (
-    <div className="flex flex-col gap-4">
-      {activeCount(groups) === 0 && (
-        <p className="border-destructive bg-destructive/5 text-destructive rounded-md border p-3 text-sm">
-          No policy is on, so every request is blocked — including the model API, so agents cannot run.
-        </p>
-      )}
-      {open ? (
-        <GroupDetail group={open} groups={groups} onBack={() => setOpenId(null)} />
-      ) : (
-        <>
-          <GroupList groups={groups} onOpen={setOpenId} />
-          {adding ? (
-            <GroupForm onDone={() => setAdding(false)} />
-          ) : (
-            <div>
-              <Button variant="outline" onClick={() => setAdding(true)}>
-                Add group
-              </Button>
-            </div>
+    <AgentsContext.Provider value={agents}>
+      <ScopeContext.Provider value={agent}>
+        <div className="flex flex-col gap-4">
+          {!agent && activeCount(groups) === 0 && (
+            <p className="border-destructive bg-destructive/5 text-destructive rounded-md border p-3 text-sm">
+              No policy is on, so every request is blocked, including the model
+              API, so agents cannot run.
+            </p>
           )}
-        </>
-      )}
-      <Reference />
-    </div>
+          {open ? (
+            <GroupDetail
+              group={open}
+              groups={groups}
+              onBack={() => setOpenId(null)}
+            />
+          ) : (
+            <>
+              <GroupList
+                groups={groups}
+                onOpen={setOpenId}
+                usedBy={
+                  agent
+                    ? undefined
+                    : (g) =>
+                        `used by ${usesSummary(agents, g.excludedAgentIds)}`
+                }
+              />
+              {adding ? (
+                <GroupForm onDone={() => setAdding(false)} />
+              ) : (
+                <div>
+                  <Button variant="outline" onClick={() => setAdding(true)}>
+                    Add group
+                  </Button>
+                </div>
+              )}
+            </>
+          )}
+          <Reference />
+        </div>
+      </ScopeContext.Provider>
+    </AgentsContext.Provider>
   );
 };

@@ -94,7 +94,7 @@ describe("the agents list (§3.18 as amended)", () => {
     ).toHaveAttribute("href", "/w/p1/agents/ag-1/chat");
     expect(screen.getByRole("link", { name: /Laptop/ })).toHaveAttribute(
       "href",
-      "/w/p1/agents/ag-2/connections",
+      "/w/p1/agents/ag-2/credentials",
     );
   });
 
@@ -133,7 +133,7 @@ describe("what the group highlights", () => {
     for (const path of [
       "/w/p1/agents/ag-1/chat",
       "/w/p1/agents/ag-1",
-      "/w/p1/agents/ag-1/connections",
+      "/w/p1/agents/ag-1/credentials",
     ]) {
       state.pathname = path;
       const { unmount } = renderGroup();
@@ -144,7 +144,7 @@ describe("what the group highlights", () => {
 
   it("highlights the BYO agent's own row inside that agent", () => {
     state.agents = [HOSTED, BYO];
-    for (const path of ["/w/p1/agents/ag-2", "/w/p1/agents/ag-2/connections"]) {
+    for (const path of ["/w/p1/agents/ag-2", "/w/p1/agents/ag-2/credentials"]) {
       state.pathname = path;
       const { unmount } = renderGroup();
       expect(activeNames()).toEqual(["Laptop"]);
@@ -156,7 +156,7 @@ describe("what the group highlights", () => {
     // An agent missing from the list (deleted, or the list resolved empty):
     // the roster row is the only place the sidebar can point at.
     state.agents = [HOSTED];
-    state.pathname = "/w/p1/agents/ag-2/connections";
+    state.pathname = "/w/p1/agents/ag-2/credentials";
     renderGroup();
     expect(activeNames()).toEqual(["Manage Agents"]);
   });

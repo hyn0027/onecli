@@ -155,7 +155,7 @@ describe("workspace tier: the agent rows through the real wire", () => {
     state.agents = [{ id: "ag-b", name: "Laptop", kind: "byo" }];
     renderSidebar();
     const byoRow = await screen.findByRole("link", { name: /Laptop/ });
-    expect(byoRow.getAttribute("href")).toContain("/agents/ag-b/connections");
+    expect(byoRow.getAttribute("href")).toContain("/agents/ag-b/credentials");
     expect(chatLinks()).toEqual([]);
   });
 

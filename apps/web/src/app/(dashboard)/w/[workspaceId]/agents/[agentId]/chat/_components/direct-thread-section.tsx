@@ -241,7 +241,7 @@ export const DirectThreadSection = () => {
           folded={folded}
           pending={pending}
           conversationId={conversationId}
-          modelsHref={agentSectionPath(pathname, agentId, "models")}
+          modelsHref={agentSectionPath(pathname, agentId, "credentials")}
           agentName={agent.name}
           agentId={agentId}
           onConnectModelKey={() => setKeyDialogOpen(true)}

@@ -126,7 +126,7 @@ export const ConnectionAgentAccessRow = ({
           ? "approval"
           : null;
 
-  const manageHref = `${agentSectionPath(pathname, agent.agentId, "connections")}?connection=${encodeURIComponent(connectionId)}&manage=1`;
+  const manageHref = `${agentSectionPath(pathname, agent.agentId, "credentials")}?connection=${encodeURIComponent(connectionId)}&manage=1`;
 
   return (
     <div className="flex items-center justify-between gap-3 py-2.5">

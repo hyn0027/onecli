@@ -1,22 +1,24 @@
-import { Suspense } from "react";
-import type { Metadata } from "next";
-import { AgentConnectionsSection } from "../_components/agent-connections-section";
-
-export const metadata: Metadata = {
-  title: "Connections",
-};
+import { redirect } from "next/navigation";
 
 interface Props {
-  params: Promise<{ agentId: string }>;
+  params: Promise<{ workspaceId: string; agentId: string }>;
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
 }
 
-/** Reads `?tab=` and the `?connection=&manage=1` deep link, so it needs the
- *  Suspense boundary `useSearchParams` requires. */
-export default async function AgentConnectionsPage({ params }: Props) {
-  const { agentId } = await params;
-  return (
-    <Suspense>
-      <AgentConnectionsSection agentId={agentId} />
-    </Suspense>
+/** Local change: this section is now part of Credentials; old links land there
+ *  with their query (e.g. ?tab=custom, ?connection=...&manage=1) kept. */
+export default async function AgentConnectionsRedirect({
+  params,
+  searchParams,
+}: Props) {
+  const { workspaceId, agentId } = await params;
+  const query = new URLSearchParams();
+  for (const [k, v] of Object.entries(await searchParams)) {
+    for (const item of Array.isArray(v) ? v : v === undefined ? [] : [v])
+      query.append(k, item);
+  }
+  const q = query.toString();
+  redirect(
+    `/w/${workspaceId}/agents/${agentId}/credentials${q ? `?${q}` : ""}`,
   );
 }

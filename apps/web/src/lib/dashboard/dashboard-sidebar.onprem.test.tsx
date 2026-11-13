@@ -125,7 +125,7 @@ describe("pure auto-hide: no runner, no feature", () => {
     await screen.findByText("Laptop");
     expect(screen.getByRole("link", { name: /Laptop/ })).toHaveAttribute(
       "href",
-      "/w/p1/agents/ag-b/connections",
+      "/w/p1/agents/ag-b/credentials",
     );
   });
 

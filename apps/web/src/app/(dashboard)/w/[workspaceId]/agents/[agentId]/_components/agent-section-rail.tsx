@@ -128,13 +128,11 @@ export const AgentSectionRail = ({ agent }: { agent: AgentPageAgent }) => {
   );
 
   const countFor = (section: string) =>
-    section === "connections"
+    section === "credentials"
       ? counts === undefined
         ? undefined
-        : (counts.apps ?? 0) + (counts.secrets ?? 0)
-      : section === "models"
-        ? counts?.llms
-        : undefined;
+        : (counts.secrets ?? 0)
+      : undefined;
 
   const hrefFor = (s: AgentSection) => `${base}/${s.section}`;
 

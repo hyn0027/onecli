@@ -1,10 +1,10 @@
 import {
   Brain,
-  Cpu,
   MessageSquare,
   Slack,
   Plug,
   ScrollText,
+  ShieldCheck,
   Sparkles,
   Terminal,
   Users,
@@ -103,7 +103,10 @@ export const AGENT_SECTIONS: readonly AgentSection[] = [
   // Access: everything the agent can reach, in ONE section (§3.18 as
   // amended). Apps and custom secrets were two rail entries asking the same
   // question — they are now the two tabs of Connections.
-  { section: "connections", title: "Connections", icon: Plug, group: "access" },
+  // Local change: Connections and Models are one Credentials section (model + LLM
+  // keys, workspace-wide credentials, the agent's own apps and keys). The old
+  // `connections` and `models` URLs redirect there.
+  { section: "credentials", title: "Credentials", icon: Plug, group: "access" },
   {
     // WHO the agent may talk with (PR 5b): the people, channels, other
     // agents and apps it may reach or be reached by, each with its standing
@@ -119,7 +122,14 @@ export const AGENT_SECTIONS: readonly AgentSection[] = [
   },
   // The model sits under Access too: it is the other thing the agent is
   // GIVEN, beside the connections it can reach.
-  { section: "models", title: "Models", icon: Cpu, group: "access" },
+  // Local addition: the Cedar policy groups written for this agent alone
+  // (workspace-wide groups stay on Settings → Policy). Any kind of agent.
+  {
+    section: "policies",
+    title: "Policies",
+    icon: ShieldCheck,
+    group: "access",
+  },
   {
     section: "instructions",
     title: "Instructions",
@@ -189,7 +199,7 @@ export const AGENT_SECTIONS: readonly AgentSection[] = [
  * menu's Details dialog), so the index must land somewhere real.
  */
 export const defaultAgentSection = (kind: string): string =>
-  agentSectionsFor(kind)[0]?.section ?? "connections";
+  agentSectionsFor(kind)[0]?.section ?? "credentials";
 
 /** The sections an agent of this kind actually has. */
 export const agentSectionsFor = (kind: string): AgentSection[] =>

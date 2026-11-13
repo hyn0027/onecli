@@ -13,16 +13,24 @@ import type {
  * Values are never returned by the API.
  */
 
-const Field = ({ label, children }: { label: string; children: React.ReactNode }) => (
+const Field = ({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) => (
   <div className="flex gap-3 py-1">
-    <span className="text-muted-foreground w-32 shrink-0 font-mono text-xs leading-5">{label}</span>
+    <span className="text-muted-foreground w-32 shrink-0 font-mono text-xs leading-5">
+      {label}
+    </span>
     <div className="min-w-0 flex-1">{children}</div>
   </div>
 );
 
 const Value = ({ value }: { value: unknown }) => {
   if (value === null || value === undefined || value === "") {
-    return <span className="text-muted-foreground text-xs">—</span>;
+    return <span className="text-muted-foreground text-xs">none</span>;
   }
   if (typeof value === "object") {
     return (
@@ -34,7 +42,7 @@ const Value = ({ value }: { value: unknown }) => {
   return <code className="text-xs">{String(value)}</code>;
 };
 
-const SecretCard = ({ secret }: { secret: SecretConfig }) => (
+export const SecretCard = ({ secret }: { secret: SecretConfig }) => (
   <div className="rounded-md border p-3 text-sm">
     <div className="mb-2 flex items-center gap-2">
       <span className="font-medium">{secret.name}</span>
@@ -112,10 +120,18 @@ export const GrantDetails = ({
           return (
             <div key={ti} className="flex flex-col gap-2">
               <Field label="target">
-                <Value value={t.secretId ? { kind: "secret", secretId: t.secretId } : { kind: "secret", secretScope: t.secretScope }} />
+                <Value
+                  value={
+                    t.secretId
+                      ? { kind: "secret", secretId: t.secretId }
+                      : { kind: "secret", secretScope: t.secretScope }
+                  }
+                />
               </Field>
               {covered.length === 0 ? (
-                <p className="text-muted-foreground text-sm">No matching secret.</p>
+                <p className="text-muted-foreground text-sm">
+                  No matching secret.
+                </p>
               ) : (
                 covered.map((s) => <SecretCard key={s.id} secret={s} />)
               )}

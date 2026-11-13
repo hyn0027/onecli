@@ -1,6 +1,5 @@
 import { db } from "@onecli/db";
 import { logger } from "../lib/logger";
-import { LLM_PROVIDER_IDS } from "../llm/registry";
 import {
   addDefaultGrants,
   type DefaultGrantRequest,
@@ -103,31 +102,22 @@ export const attachNewSecretToAllAgents = (
     secretIds: [secretId],
   }));
 
-/** Every live WORKSPACE connection and custom secret, to a freshly CREATED
- * agent. */
+/** Every live WORKSPACE connection to a freshly CREATED agent. Local change
+ * (two-layer credentials): custom secrets are no longer attached to every new
+ * agent; a new agent gets the workspace-wide ones (`workspace-layers-service`). */
 export const attachWorkspaceResourcesToNewAgent = (
   workspaceId: string,
   agentId: string,
   userId: string | null,
 ): Promise<DefaultGrantResult> =>
   attach(workspaceId, userId, async () => {
-    const [connections, secrets] = await Promise.all([
-      db.appConnection.findMany({
-        where: { workspaceId, scope: "workspace", status: "connected" },
-        select: { id: true },
-      }),
-      db.secret.findMany({
-        where: {
-          workspaceId,
-          scope: "workspace",
-          type: { notIn: LLM_PROVIDER_IDS },
-        },
-        select: { id: true },
-      }),
-    ]);
+    const connections = await db.appConnection.findMany({
+      where: { workspaceId, scope: "workspace", status: "connected" },
+      select: { id: true },
+    });
     return {
       agentIds: [agentId],
       connectionIds: connections.map((c) => c.id),
-      secretIds: secrets.map((s) => s.id),
+      secretIds: [],
     };
   });

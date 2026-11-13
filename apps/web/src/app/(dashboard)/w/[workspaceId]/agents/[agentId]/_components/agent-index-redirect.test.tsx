@@ -38,12 +38,12 @@ describe("the agent index redirect", () => {
     );
   });
 
-  it("forwards a BYO agent to Connections — it has no Chat", async () => {
+  it("forwards a BYO agent to Credentials — it has no Chat", async () => {
     state.agent = { id: "ag-1", kind: "byo" };
     render(<AgentIndexRedirect />);
     await waitFor(() =>
       expect(mocks.replace).toHaveBeenCalledWith(
-        "/w/w1/agents/ag-1/connections",
+        "/w/w1/agents/ag-1/credentials",
       ),
     );
   });
@@ -69,7 +69,7 @@ describe("the agent index redirect", () => {
 
     await waitFor(() =>
       expect(mocks.replace).toHaveBeenCalledWith(
-        "/w/w1/agents/ag-2/connections",
+        "/w/w1/agents/ag-2/credentials",
       ),
     );
   });
